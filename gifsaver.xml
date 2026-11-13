@@ -10,6 +10,13 @@
           _label="Frame delay (ms, 0 = use GIF timing)"
           low="0" high="5000" default="0"/>
 
+  <select id="background">
+    <option id="bg_auto" _label="Automatic backdrop"/>
+    <option id="bg_white" _label="White backdrop" arg-set="-background white"/>
+    <option id="bg_black" _label="Black backdrop" arg-set="-background black"/>
+    <option id="bg_gray" _label="Gray backdrop" arg-set="-background gray50"/>
+  </select>
+
   <_description>
 Tiles an animated GIF across the entire screen, honoring the
 animation's own frame timing, transparency and disposal methods.

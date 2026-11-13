@@ -35,10 +35,19 @@ Or paint the whole root window:
 | `-window-id 0xNNN` | Draw on an existing window (used by xscreensaver) |
 | `-window` | Open a test window (default when run by hand) |
 | `-delay ms` | Override all frame delays with a fixed value |
+| `-background color` | Backdrop for transparent areas (X color name or `#rrggbb`) |
 | `-display dpy` | X display to connect to |
 
 The GIF file may also be given via the `GIFSAVER_GIF` environment
 variable instead of a positional argument.
+
+### Transparent GIFs
+
+Many GIFs mark their background as transparent and rely on whatever is
+behind them (e.g., a web page) to show through. When the GIF declares no
+usable background color, gifsaver composites transparent areas over
+white, like a browser on a typical page. Use `-background` to pick a
+different backdrop, e.g. `-background black` or `-background '#336699'`.
 
 ## Installing into xscreensaver
 

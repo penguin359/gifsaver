@@ -148,10 +148,13 @@ static Pixmap canvas_to_pixmap(Display *dpy, Window win, Visual *visual,
             unsigned long r = (rgb >> 16) & 0xff;
             unsigned long g = (rgb >> 8) & 0xff;
             unsigned long b = rgb & 0xff;
-            unsigned long pixel =
-                (((r >> (8 - rbits)) << rshift) & rmask) |
-                (((g >> (8 - gbits)) << gshift) & gmask) |
-                (((b >> (8 - bbits)) << bshift) & bmask);
+            /* Scale 8-bit channels up or down to the visual's depth. */
+            unsigned long rv = rbits >= 8 ? r << (rbits - 8) : r >> (8 - rbits);
+            unsigned long gv = gbits >= 8 ? g << (gbits - 8) : g >> (8 - gbits);
+            unsigned long bv = bbits >= 8 ? b << (bbits - 8) : b >> (8 - bbits);
+            unsigned long pixel = ((rv << rshift) & rmask) |
+                                  ((gv << gshift) & gmask) |
+                                  ((bv << bshift) & bmask);
             XPutPixel(img, x, y, pixel);
         }
     }
@@ -167,9 +170,12 @@ static Pixmap canvas_to_pixmap(Display *dpy, Window win, Visual *visual,
 /*
  * Decode `filename` and return an array of composed, canvas-sized
  * frames as Pixmaps. Returns the frame count; fills *out_frames.
+ * bg_override is an 0xRRGGBB backdrop for transparent areas, or -1
+ * to pick one automatically.
  */
 static int load_gif_frames(const char *filename, Display *dpy, Window win,
-                           Visual *visual, int depth, Frame **out_frames)
+                           Visual *visual, int depth, long bg_override,
+                           Frame **out_frames)
 {
     int err = 0;
     GifFileType *gif = DGifOpenFileName(filename, &err);
@@ -196,6 +202,23 @@ static int load_gif_frames(const char *filename, Display *dpy, Window win,
 
     if (gif->SColorMap)
         bg_color = color_of(gif->SColorMap, gif->SBackGroundColor);
+
+    /*
+     * If the background color index is also the first frame's transparent
+     * color (or there is no global colormap), its palette entry carries no
+     * meaningful color.  Such GIFs are drawn by browsers over the page
+     * behind them, which is usually light, so default to white; use
+     * -background to override.
+     */
+    {
+        GraphicsControlBlock gcb0;
+        if (!gif->SColorMap ||
+            (DGifSavedExtensionToGCB(gif, 0, &gcb0) == GIF_OK &&
+             gcb0.TransparentColor == gif->SBackGroundColor))
+            bg_color = 0xffffff;
+    }
+    if (bg_override >= 0)
+        bg_color = (unsigned int) bg_override;
 
     canvas = malloc((size_t) cw * ch * sizeof *canvas);
     prev = malloc((size_t) cw * ch * sizeof *prev);
@@ -288,7 +311,9 @@ static void usage(void)
         "  -root              draw on the root window\n"
         "  -window-id 0xNNN   draw on an existing window (xscreensaver)\n"
         "  -window            open a test window (default)\n"
-        "  -delay ms          override all frame delays\n",
+        "  -delay ms          override all frame delays\n"
+        "  -background color  backdrop for transparent areas\n"
+        "                     (X color name or #rrggbb)\n",
         progname);
     exit(1);
 }
@@ -304,6 +329,8 @@ int main(int argc, char **argv)
     int screen;
     int use_root = 0;
     int delay_override = -1;
+    long bg_override = -1;
+    const char *bg_name = NULL;
     const char *gif_file = NULL;
     const char *display_name = NULL;
     const char *env;
@@ -318,6 +345,9 @@ int main(int argc, char **argv)
             win = (Window) strtoul(argv[++i], NULL, 0);
         } else if (!strcmp(argv[i], "-delay") && i + 1 < argc) {
             delay_override = atoi(argv[++i]);
+        } else if ((!strcmp(argv[i], "-background") ||
+                    !strcmp(argv[i], "-bg")) && i + 1 < argc) {
+            bg_name = argv[++i];
         } else if ((!strcmp(argv[i], "-display") || !strcmp(argv[i], "-d"))
                    && i + 1 < argc) {
             display_name = argv[++i];
@@ -370,8 +400,20 @@ int main(int argc, char **argv)
             die("only TrueColor/DirectColor visuals are supported");
     }
 
+    if (bg_name) {
+        XColor xc;
+        if (!XParseColor(dpy, DefaultColormap(dpy, screen), bg_name, &xc)) {
+            fprintf(stderr, "%s: unrecognized color \"%s\"\n",
+                    progname, bg_name);
+            exit(1);
+        }
+        bg_override = ((long) (xc.red >> 8) << 16) |
+                      ((long) (xc.green >> 8) << 8) |
+                      (long) (xc.blue >> 8);
+    }
+
     nframes = load_gif_frames(gif_file, dpy, win, xgwa.visual,
-                              xgwa.depth, &frames);
+                              xgwa.depth, bg_override, &frames);
     if (delay_override >= 0)
         for (i = 0; i < nframes; i++)
             frames[i].delay_ms = delay_override;
