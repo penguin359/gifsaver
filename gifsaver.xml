@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+
+<screensaver name="gifsaver" _label="GifSaver">
+
+  <command arg="-root"/>
+
+  <file id="gif" _label="GIF file" arg="%"/>
+
+  <number id="delay" type="spinbutton" arg="-delay %"
+          _label="Frame delay (ms, 0 = use GIF timing)"
+          low="0" high="5000" default="0"/>
+
+  <_description>
+Tiles an animated GIF across the entire screen, honoring the
+animation's own frame timing, transparency and disposal methods.
+
+Written for xscreensaver using Xlib and giflib.
+  </_description>
+
+</screensaver>
