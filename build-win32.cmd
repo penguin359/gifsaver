@@ -22,9 +22,12 @@ if not defined VCPKG_ROOT goto no_vcpkg
 "%VCPKG_ROOT%\vcpkg.exe" install --triplet %TRIPLET% || goto fail
 set "DEPS=%CD%\vcpkg_installed\%TRIPLET%"
 
+rc /nologo /fo platform_win32.res platform_win32.rc || goto fail
 cl /nologo /O2 /W3 /MT /D_CRT_SECURE_NO_WARNINGS ^
-   /I"%DEPS%\include" %* anim.c wav.c platform_win32.c /Fe:gifsaver.scr ^
+   /I"%DEPS%\include" %* anim.c wav.c platform_win32.c platform_win32.res ^
+   /Fe:gifsaver.scr ^
    /link /LIBPATH:"%DEPS%\lib" gif.lib user32.lib gdi32.lib winmm.lib ^
+   comdlg32.lib advapi32.lib ^
    /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup || goto fail
 exit /b 0
 

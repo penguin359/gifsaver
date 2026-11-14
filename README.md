@@ -60,22 +60,26 @@ giflib is declared (Windows-only) in [vcpkg.json](./vcpkg.json) and
 linked statically. From PowerShell:
 
 ```powershell
-.\build-win32.cmd                 # writes gifsaver.scr
-$env:GIFSAVER_GIF = "C:\path\to\animation.gif"
-$env:GIFSAVER_SOUND = "C:\path\to\music.wav"   # optional
-.\gifsaver.scr                    # runs full screen
+.\build-win32.cmd                          # writes gifsaver.scr
+Start-Process .\gifsaver.scr -Verb config  # settings: pick the GIF and WAV
+.\gifsaver.scr                             # runs full screen
 ```
 
-`.scr` is not an executable extension to the shell, so `.\gifsaver.scr`
-goes through the file association (`"%1" /S`), which drops any further
-arguments; pass the files through `GIFSAVER_GIF` and `GIFSAVER_SOUND`
-instead. Windows itself also only passes `/s` when starting the
-screensaver, so set them permanently (e.g. in `sysdm.cpl`), or embed
-the media by building with e.g.
-`.\build-win32.cmd /DGIFSAVER_EMBED_GIF=1 /DGIFSAVER_EMBED_WAV=1`.
+The settings dialog stores the chosen files under
+`HKCU\Software\gifsaver`; it is the same dialog the Screen Saver
+Settings *Settings…* button opens (Explorer's right-click *Configure*
+works too). `.scr` is not an executable extension to the shell, so
+launching it goes through the file association, whose *open* verb
+(`"%1" /S`) replaces any arguments with `/S`; hence the `config` verb
+above. The `GIFSAVER_GIF` and `GIFSAVER_SOUND` environment variables
+override the dialog's choices, which is handy for testing.
+Media can also be embedded by building with e.g.
+`.\build-win32.cmd /DGIFSAVER_EMBED_GIF=1 /DGIFSAVER_EMBED_WAV=1`;
+leaving a field empty in the dialog then uses the built-in file.
 The WAV loops through the default output device (waveOut). See
 [Installing on Windows](#installing-on-windows) to make it your
-screensaver. Preview and settings are not supported on Windows yet.
+screensaver. The small preview in Screen Saver Settings is not
+supported on Windows yet.
 
 ### Dev container / Codespaces
 
@@ -209,18 +213,7 @@ automatically and draws on that window.
 
 ## Installing on Windows
 
-1. Point gifsaver at your media with user environment variables (skip
-   whichever you embedded at build time). Use absolute paths, since the
-   screensaver does not start in your working directory:
-
-   ```powershell
-   [Environment]::SetEnvironmentVariable('GIFSAVER_GIF', 'C:\path\to\animation.gif', 'User')
-   [Environment]::SetEnvironmentVariable('GIFSAVER_SOUND', 'C:\path\to\music.wav', 'User')   # optional
-   ```
-
-   Sign out and back in if the screensaver does not pick them up.
-
-2. Install the screensaver, either:
+1. Install the screensaver, either:
 
    - **In place** (no admin rights): right-click `gifsaver.scr` in
      Explorer and choose *Install*, or run
@@ -242,13 +235,13 @@ automatically and draws on that window.
      control desk.cpl,,@screensaver
      ```
 
-3. Set the wait time in the Screen Saver Settings dialog. The small
-   preview stays blank and *Settings…* only shows a short notice;
-   *Preview* runs it full screen.
+2. In the Screen Saver Settings dialog, click *Settings…* to choose
+   the GIF and (optionally) the WAV, and set the wait time. The small
+   preview stays blank; *Preview* runs it full screen.
 
-To uninstall, pick another screensaver (or *None*) in the same dialog
-and, for a system-wide install, delete
-`C:\Windows\System32\gifsaver.scr`.
+To uninstall, pick another screensaver (or *None*) in the same dialog,
+delete the `HKCU\Software\gifsaver` registry key and, for a
+system-wide install, delete `C:\Windows\System32\gifsaver.scr`.
 
 ## License
 

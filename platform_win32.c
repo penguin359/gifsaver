@@ -10,12 +10,13 @@
  *
  *   gifsaver.scr /s [-sound file.wav] [file.gif]   run full screen
  *   gifsaver.scr /p <hwnd>        preview (not supported yet)
- *   gifsaver.scr [/c[:<hwnd>]]    settings (not supported yet)
+ *   gifsaver.scr [/c[:<hwnd>]]    settings dialog
  *
  * The GIF is taken from the command line, else the GIFSAVER_GIF
- * environment variable, else (with GIFSAVER_EMBED_GIF) the built-in GIF.
- * Likewise the WAV comes from -sound, else GIFSAVER_SOUND, else (with
- * GIFSAVER_EMBED_WAV) the built-in WAV.
+ * environment variable, else the settings dialog's choice (stored under
+ * HKCU\Software\gifsaver), else (with GIFSAVER_EMBED_GIF) the built-in
+ * GIF. Likewise the WAV comes from -sound, else GIFSAVER_SOUND, else
+ * the settings, else (with GIFSAVER_EMBED_WAV) the built-in WAV.
  *
  * Requires: giflib (>= 5.0), provided by vcpkg; see vcpkg.json.
  * Optional: winmm for -sound; see config.h.
@@ -23,6 +24,7 @@
 
 #include "config.h"
 #include "gifsaver.h"
+#include "platform_win32.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -31,6 +33,7 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <commdlg.h>
 
 #if GIFSAVER_AUDIO
 #include <mmsystem.h>
@@ -46,6 +49,20 @@ const char *progname = "gifsaver";
 #define FRAME_TIMER 1
 #define MOUSE_SLOP  4   /* pixels the mouse may drift before we quit */
 
+#define REG_KEY     "Software\\gifsaver"
+#define REG_GIF     "GifFile"
+#define REG_SOUND   "SoundFile"
+
+#if GIFSAVER_EMBED_GIF && GIFSAVER_EMBED_WAV
+#define CONFIG_NOTE "Leave a field empty to use the built-in GIF or sound."
+#elif GIFSAVER_EMBED_GIF
+#define CONFIG_NOTE "Leave the GIF empty to use the built-in animation."
+#elif GIFSAVER_EMBED_WAV
+#define CONFIG_NOTE "Leave the sound empty to play the built-in sound."
+#else
+#define CONFIG_NOTE ""
+#endif
+
 static struct {
     HBRUSH *brushes;    /* one tiling pattern brush per frame */
     int *delays;        /* per-frame delay in ms */
@@ -58,6 +75,115 @@ static void die(const char *msg)
     fprintf(stderr, "%s: %s\n", progname, msg);
     MessageBoxA(NULL, msg, progname, MB_OK | MB_ICONERROR);
     exit(1);
+}
+
+/* ------------------------------------------------------------------ */
+/* Settings: default media paths in the registry, edited through the  */
+/* dialog the screensaver control panel opens with /c:<hwnd>.         */
+/* ------------------------------------------------------------------ */
+
+/* Read a non-empty REG_SZ setting into buf; returns 0 if unset. */
+static int reg_get(const char *name, char *buf, DWORD size)
+{
+    if (RegGetValueA(HKEY_CURRENT_USER, REG_KEY, name, RRF_RT_REG_SZ,
+                     NULL, buf, &size) != ERROR_SUCCESS)
+        return 0;
+    return buf[0] != '\0';
+}
+
+static void reg_set(HKEY key, const char *name, const char *value)
+{
+    if (*value)
+        RegSetValueExA(key, name, 0, REG_SZ, (const BYTE *) value,
+                       (DWORD) strlen(value) + 1);
+    else
+        RegDeleteValueA(key, name);
+}
+
+static void config_browse(HWND dlg, int edit_id, const char *filter)
+{
+    char path[MAX_PATH];
+    OPENFILENAMEA ofn;
+
+    GetDlgItemTextA(dlg, edit_id, path, sizeof path);
+    memset(&ofn, 0, sizeof ofn);
+    ofn.lStructSize = sizeof ofn;
+    ofn.hwndOwner = dlg;
+    ofn.lpstrFilter = filter;
+    ofn.lpstrFile = path;
+    ofn.nMaxFile = sizeof path;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_HIDEREADONLY | OFN_NOCHANGEDIR;
+    if (GetOpenFileNameA(&ofn))
+        SetDlgItemTextA(dlg, edit_id, path);
+}
+
+static int config_save(HWND dlg)
+{
+    char path[MAX_PATH];
+    HKEY key;
+
+#if !GIFSAVER_EMBED_GIF
+    if (!GetWindowTextLengthA(GetDlgItem(dlg, IDC_GIF))) {
+        MessageBoxA(dlg, "Choose an animated GIF to display.", progname,
+                    MB_OK | MB_ICONWARNING);
+        return -1;
+    }
+#endif
+    if (RegCreateKeyExA(HKEY_CURRENT_USER, REG_KEY, 0, NULL, 0,
+                        KEY_SET_VALUE, NULL, &key, NULL) != ERROR_SUCCESS) {
+        MessageBoxA(dlg, "Cannot save the settings.", progname,
+                    MB_OK | MB_ICONERROR);
+        return -1;
+    }
+    GetDlgItemTextA(dlg, IDC_GIF, path, sizeof path);
+    reg_set(key, REG_GIF, path);
+    GetDlgItemTextA(dlg, IDC_SOUND, path, sizeof path);
+    reg_set(key, REG_SOUND, path);
+    RegCloseKey(key);
+    return 0;
+}
+
+static INT_PTR CALLBACK config_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
+{
+    char path[MAX_PATH];
+
+    (void) lp;
+    switch (msg) {
+    case WM_INITDIALOG:
+        SendDlgItemMessageA(dlg, IDC_GIF, EM_LIMITTEXT, MAX_PATH - 1, 0);
+        SendDlgItemMessageA(dlg, IDC_SOUND, EM_LIMITTEXT, MAX_PATH - 1, 0);
+        if (reg_get(REG_GIF, path, sizeof path))
+            SetDlgItemTextA(dlg, IDC_GIF, path);
+        if (reg_get(REG_SOUND, path, sizeof path))
+            SetDlgItemTextA(dlg, IDC_SOUND, path);
+#if !GIFSAVER_AUDIO
+        EnableWindow(GetDlgItem(dlg, IDC_SOUND), FALSE);
+        EnableWindow(GetDlgItem(dlg, IDC_SOUND_BROWSE), FALSE);
+#endif
+        SetDlgItemTextA(dlg, IDC_NOTE, CONFIG_NOTE);
+        return TRUE;
+
+    case WM_COMMAND:
+        switch (LOWORD(wp)) {
+        case IDC_GIF_BROWSE:
+            config_browse(dlg, IDC_GIF,
+                          "GIF images (*.gif)\0*.gif\0All files (*.*)\0*.*\0");
+            return TRUE;
+        case IDC_SOUND_BROWSE:
+            config_browse(dlg, IDC_SOUND,
+                          "WAV files (*.wav)\0*.wav\0All files (*.*)\0*.*\0");
+            return TRUE;
+        case IDOK:
+            if (config_save(dlg) == 0)
+                EndDialog(dlg, IDOK);
+            return TRUE;
+        case IDCANCEL:
+            EndDialog(dlg, IDCANCEL);
+            return TRUE;
+        }
+        break;
+    }
+    return FALSE;
 }
 
 /* Turn one RGB canvas into a pattern brush that tiles it. */
@@ -309,16 +435,21 @@ static void run_fullscreen(const char *wav_file)
 
 int main(int argc, char **argv)
 {
+    static char reg_gif[MAX_PATH], reg_wav[MAX_PATH];
     Animation anim;
     const char *gif_file = NULL;
     const char *wav_file = NULL;
     const char *env;
+    HWND parent = NULL;
     char mode = 'c';    /* no arguments means "settings" */
     int i, r;
 
     /* Let diagnostics reach the console when started from one. */
     if (AttachConsole(ATTACH_PARENT_PROCESS))
         freopen("CONOUT$", "w", stderr);
+
+    /* Draw at native resolution instead of being bitmap-stretched. */
+    SetProcessDPIAware();
 
     for (i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -329,6 +460,8 @@ int main(int argc, char **argv)
             mode = (char) tolower((unsigned char) a[1]);
             if (mode == 'p' && a[2] == '\0' && i + 1 < argc)
                 i++;    /* skip the preview window handle */
+            else if (mode == 'c' && a[2] == ':')
+                parent = (HWND) (UINT_PTR) strtoull(a + 3, NULL, 10);
         } else {
             gif_file = a;
         }
@@ -337,12 +470,8 @@ int main(int argc, char **argv)
     if (mode == 'p')
         return 0;
     if (mode != 's') {
-        MessageBoxA(NULL,
-                    "gifsaver has no settings dialog yet.\n\n"
-                    "Set the GIFSAVER_GIF environment variable to the "
-                    "path of an animated GIF to display, and optionally "
-                    "GIFSAVER_SOUND to a WAV file to loop.",
-                    progname, MB_OK | MB_ICONINFORMATION);
+        DialogBoxParamA(GetModuleHandleA(NULL), MAKEINTRESOURCEA(IDD_CONFIG),
+                        parent, config_proc, 0);
         return 0;
     }
 
@@ -350,22 +479,23 @@ int main(int argc, char **argv)
         env = getenv("GIFSAVER_GIF");
         if (env && *env)
             gif_file = env;
+        else if (reg_get(REG_GIF, reg_gif, sizeof reg_gif))
+            gif_file = reg_gif;
     }
     if (!wav_file) {
         env = getenv("GIFSAVER_SOUND");
         if (env && *env)
             wav_file = env;
+        else if (reg_get(REG_SOUND, reg_wav, sizeof reg_wav))
+            wav_file = reg_wav;
     }
-
-    /* Draw at native resolution instead of being bitmap-stretched. */
-    SetProcessDPIAware();
 
 #if GIFSAVER_EMBED_GIF
     r = gif_file ? anim_load_file(gif_file, -1, &anim)
                  : anim_load_builtin(-1, &anim);
 #else
     if (!gif_file)
-        die("no GIF given: pass file.gif or set GIFSAVER_GIF");
+        die("no GIF configured: choose one in the screensaver settings");
     r = anim_load_file(gif_file, -1, &anim);
 #endif
     if (r < 0) {
