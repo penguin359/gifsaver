@@ -27,10 +27,10 @@ one new platform file:
 | [anim.c](./anim.c) | Portable: GIF → RGB frame buffers (giflib only) |
 | [wav.c](./wav.c) | Portable: RIFF/WAVE → described sample buffer |
 | [platform_x11.c](./platform_x11.c) | Linux/X11: `main()`, xscreensaver conventions, windowing, tiled drawing, event/timing loop, ALSA output |
+| [platform_win32.c](./platform_win32.c) | Windows: `main()`, `.scr` command line, full-screen tiled drawing, timer loop, waveOut output |
 
-The platform layer is selected with `make PLATFORM=x11` (the default);
-a future Windows port would add `platform_win32.c` and build with
-`PLATFORM=win32`.
+The Makefile builds the X11 layer (`make PLATFORM=x11`, the default);
+Windows uses [build-win32.cmd](./build-win32.cmd) instead.
 
 Compile-time features are configured through Makefile variables, set
 on the command line or persistently in an optional `config.mk` (which
@@ -51,6 +51,35 @@ The Makefile injects these as `-D` flags and tracks them in a stamp
 file, so changing a feature automatically rebuilds the affected
 objects. [config.h](./config.h) only holds fallback defaults for
 builds that bypass the Makefile.
+
+### Windows screensaver (.scr)
+
+Needs Visual Studio with the C++ workload and
+[vcpkg](https://github.com/microsoft/vcpkg) with `VCPKG_ROOT` set.
+giflib is declared (Windows-only) in [vcpkg.json](./vcpkg.json) and
+linked statically. From PowerShell:
+
+```powershell
+.\build-win32.cmd                          # writes gifsaver.scr
+Start-Process .\gifsaver.scr -Verb config  # settings: pick the GIF and WAV
+.\gifsaver.scr                             # runs full screen
+```
+
+The settings dialog stores the chosen files under
+`HKCU\Software\gifsaver`; it is the same dialog the Screen Saver
+Settings *Settings…* button opens (Explorer's right-click *Configure*
+works too). `.scr` is not an executable extension to the shell, so
+launching it goes through the file association, whose *open* verb
+(`"%1" /S`) replaces any arguments with `/S`; hence the `config` verb
+above. The `GIFSAVER_GIF` and `GIFSAVER_SOUND` environment variables
+override the dialog's choices, which is handy for testing.
+Media can also be embedded by building with e.g.
+`.\build-win32.cmd /DGIFSAVER_EMBED_GIF=1 /DGIFSAVER_EMBED_WAV=1`;
+leaving a field empty in the dialog then uses the built-in file.
+The WAV loops through the default output device (waveOut). See
+[Installing on Windows](#installing-on-windows) to make it your
+screensaver. The small preview in Screen Saver Settings is not
+supported on Windows yet.
 
 ### Dev container / Codespaces
 
@@ -181,6 +210,38 @@ committed.
 When xscreensaver activates, it runs the hack with the target window in
 the `XSCREENSAVER_WINDOW` environment variable; gifsaver detects this
 automatically and draws on that window.
+
+## Installing on Windows
+
+1. Install the screensaver, either:
+
+   - **In place** (no admin rights): right-click `gifsaver.scr` in
+     Explorer and choose *Install*, or run
+
+     ```powershell
+     rundll32.exe desk.cpl,InstallScreenSaver "$PWD\gifsaver.scr"
+     ```
+
+     Windows remembers this path, so keep the file where it is. It is
+     not added to the drop-down list, so it disappears from there once
+     another screensaver is chosen.
+
+   - **System-wide** (elevated 64-bit PowerShell): copy it next to the
+     built-in screensavers so it always appears in the drop-down list,
+     then pick *gifsaver* there:
+
+     ```powershell
+     Copy-Item .\gifsaver.scr C:\Windows\System32\
+     control desk.cpl,,@screensaver
+     ```
+
+2. In the Screen Saver Settings dialog, click *Settings…* to choose
+   the GIF and (optionally) the WAV, and set the wait time. The small
+   preview stays blank; *Preview* runs it full screen.
+
+To uninstall, pick another screensaver (or *None*) in the same dialog,
+delete the `HKCU\Software\gifsaver` registry key and, for a
+system-wide install, delete `C:\Windows\System32\gifsaver.scr`.
 
 ## License
 

@@ -12,9 +12,10 @@
 #define GIFSAVER_CONFIG_H
 
 /*
- * Audio support: loop a WAV file (-sound file.wav) through ALSA while
- * the animation plays. Requires libasound (libasound2-dev) at build
- * time. Configure with the AUDIO make variable.
+ * Audio support: loop a WAV file (-sound file.wav) while the animation
+ * plays. On Linux this goes through ALSA and requires libasound
+ * (libasound2-dev) at build time; on Windows it uses winmm. Configure
+ * with the AUDIO make variable.
  */
 #ifndef GIFSAVER_AUDIO
 #define GIFSAVER_AUDIO 1

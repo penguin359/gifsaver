@@ -29,7 +29,7 @@ endif
 
 # ---------------------------------------------------------------------
 
-# Platform layer: x11 today; win32/macos planned.
+# Platform layer: x11 (Windows builds use build-win32.cmd).
 PLATFORM ?= x11
 
 # Portable core + one platform file.
