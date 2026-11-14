@@ -1,0 +1,26 @@
+{
+	"name": "gifsaver",
+	// Standard GitHub Codespaces base image.
+	"image": "mcr.microsoft.com/devcontainers/universal:2",
+
+	// Build dependencies (libx11-dev, libgif-dev, libasound2-dev) and
+	// headless test tools (xvfb, x11-utils for xdpyinfo).
+	// Refresh the base image's Yarn signing key before updating APT.
+	"onCreateCommand": "curl -fsSL https://dl.yarnpkg.com/debian/pubkey.gpg | sudo gpg --dearmor --batch --yes -o /usr/share/keyrings/yarn-archive-keyring.gpg && sudo apt-get update && sudo apt-get install -y --no-install-recommends libx11-dev libgif-dev libasound2-dev xvfb x11-utils && sudo rm -rf /var/lib/apt/lists/*",
+
+	// Verify the build works once the container is ready.
+	"postCreateCommand": "make clean && make",
+
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				// C development: IntelliSense, debugging.
+				"ms-vscode.cpptools",
+				// Makefile integration for the build.
+				"ms-vscode.makefile-tools",
+				// Python support for embed2c.py.
+				"ms-python.python"
+			]
+		}
+	}
+}

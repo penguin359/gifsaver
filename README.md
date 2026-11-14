@@ -20,6 +20,14 @@ the ALSA dependency, set `GIFSAVER_AUDIO` to `0` (or comment it out)
 there and rebuild — the Makefile then drops `-lasound` automatically,
 and `-sound` is ignored with a notice at runtime.
 
+### Dev container / Codespaces
+
+A [dev container configuration](./.devcontainer/devcontainer.json) is
+included: open the repo in a GitHub Codespace (or VS Code's "Reopen in
+Container") and all build dependencies, headless-test tools (`Xvfb`,
+`xdpyinfo`) and recommended extensions are set up automatically; the
+project is built once the container is created.
+
 ## Trying it out, Failing Fast!
 
 Run it standalone in a test window:
