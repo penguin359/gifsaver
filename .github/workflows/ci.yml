@@ -28,8 +28,7 @@ jobs:
       - name: Build (without audio)
         run: |
           make clean
-          make CFLAGS="-O2 -Wall -Wextra -DGIFSAVER_AUDIO=0" \
-               LDLIBS="-lX11 -lgif"
+          make AUDIO=0
           ./gifsaver -version
           if ldd gifsaver | grep -q asound; then
             echo "error: no-audio build still links libasound" >&2

@@ -50,12 +50,12 @@ cd "libXau-$LIBXAU_VERSION"
 make --quiet
 make --quiet install
 
-# Build gifsaver statically; -D overrides force the ALSA code out.
+# Build gifsaver statically; feature variables force the ALSA code out.
 cp -r /src /build
 cd /build
 make clean
-make CFLAGS="-O2 -Wall -Wextra -static \
-             -DGIFSAVER_AUDIO=0 -DGIFSAVER_EMBED_WAV=0" \
+make AUDIO=0 EMBED_WAV=0 \
+     CFLAGS="-O2 -Wall -Wextra -static" \
      LDLIBS="-lX11 -lxcb -lXau -lXdmcp -lgif"
 
 # Verify the result really is static.

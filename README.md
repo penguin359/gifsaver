@@ -32,10 +32,25 @@ The platform layer is selected with `make PLATFORM=x11` (the default);
 a future Windows port would add `platform_win32.c` and build with
 `PLATFORM=win32`.
 
-Compile-time features live in [config.h](./config.h). To build without
-the ALSA dependency, set `GIFSAVER_AUDIO` to `0` (or comment it out)
-there and rebuild — the Makefile then drops `-lasound` automatically,
-and `-sound` is ignored with a notice at runtime.
+Compile-time features are configured through Makefile variables, set
+on the command line or persistently in an optional `config.mk` (which
+is included when present and silently skipped when missing):
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `AUDIO` | `1` | ALSA sound support (`-sound`); `AUDIO=0` drops the `libasound` dependency and `-sound` is ignored with a notice |
+| `EMBED_GIF` | `0` | Compile `default_gif.h` into the binary as the default animation |
+| `EMBED_WAV` | `0` | Compile `default_wav.h` into the binary as the default sound (needs `AUDIO=1`) |
+
+```sh
+make AUDIO=0                 # one-off build without ALSA
+echo 'EMBED_GIF = 1' > config.mk && make    # persistent local setting
+```
+
+The Makefile injects these as `-D` flags and tracks them in a stamp
+file, so changing a feature automatically rebuilds the affected
+objects. [config.h](./config.h) only holds fallback defaults for
+builds that bypass the Makefile.
 
 ### Dev container / Codespaces
 
@@ -58,8 +73,8 @@ machine and run as-is:
 
 Audio is always disabled in static builds (ALSA's plugin system needs
 `dlopen()`, which static executables cannot do); `-sound` is accepted
-but ignored with a notice. Combine with `GIFSAVER_EMBED_GIF` in
-[config.h](./config.h) for a single self-contained screensaver binary
+but ignored with a notice. Combine with `make EMBED_GIF=1` for a
+single self-contained screensaver binary
 with the animation baked in. The script pins and statically builds
 libXau from source, since Alpine does not package it as a static
 library.
@@ -121,13 +136,12 @@ the animation.
 
 A default GIF and/or WAV can be compiled directly into the executable
 so gifsaver runs with no files on disk. Convert them to C headers with
-the bundled script, then enable the features in [config.h](./config.h):
+the bundled script, then enable the features at build time:
 
 ```sh
 python3 embed2c.py image.gif      # writes default_gif.h
 python3 embed2c.py cchord.wav     # writes default_wav.h
-# set GIFSAVER_EMBED_GIF / GIFSAVER_EMBED_WAV to 1 in config.h
-make
+make EMBED_GIF=1 EMBED_WAV=1
 ./gifsaver                        # no arguments needed
 ```
 
