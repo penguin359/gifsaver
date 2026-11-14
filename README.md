@@ -147,3 +147,7 @@ committed.
 When xscreensaver activates, it runs the hack with the target window in
 the `XSCREENSAVER_WINDOW` environment variable; gifsaver detects this
 automatically and draws on that window.
+
+## License
+
+This project is licensed under the [MIT License](./LICENSE).

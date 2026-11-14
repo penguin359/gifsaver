@@ -2,6 +2,9 @@
  * gifsaver - an xscreensaver-compatible hack that tiles an animated GIF
  *            across the entire screen, optionally looping a WAV file.
  *
+ * Copyright (c) 2026 Loren M. Lang
+ * SPDX-License-Identifier: MIT
+ *
  * Usage:
  *   gifsaver [-root] [-window-id 0xNNNNNN] [-delay ms] [-window]
  *            [-background color] [-sound file.wav] file.gif

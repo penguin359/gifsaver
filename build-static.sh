@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright (c) 2026 Loren M. Lang
+# SPDX-License-Identifier: MIT
+#
 # build-static.sh - build a fully static, musl-linked gifsaver binary
 # inside an Alpine Linux container. The result has no dependency on
 # glibc or any shared library and can be copied between machines.

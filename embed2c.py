@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Loren M. Lang
+# SPDX-License-Identifier: MIT
 """Convert a GIF or WAV file into a C header with the data as a byte array.
 
 Usage:
