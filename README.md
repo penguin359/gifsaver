@@ -73,9 +73,9 @@ instead. Windows itself also only passes `/s` when starting the
 screensaver, so set them permanently (e.g. in `sysdm.cpl`), or embed
 the media by building with e.g.
 `.\build-win32.cmd /DGIFSAVER_EMBED_GIF=1 /DGIFSAVER_EMBED_WAV=1`.
-The WAV loops through the default output device (waveOut). Install by
-right-clicking `gifsaver.scr` and choosing *Install*. Preview and
-settings are not supported on Windows yet.
+The WAV loops through the default output device (waveOut). See
+[Installing on Windows](#installing-on-windows) to make it your
+screensaver. Preview and settings are not supported on Windows yet.
 
 ### Dev container / Codespaces
 
@@ -206,6 +206,49 @@ committed.
 When xscreensaver activates, it runs the hack with the target window in
 the `XSCREENSAVER_WINDOW` environment variable; gifsaver detects this
 automatically and draws on that window.
+
+## Installing on Windows
+
+1. Point gifsaver at your media with user environment variables (skip
+   whichever you embedded at build time). Use absolute paths, since the
+   screensaver does not start in your working directory:
+
+   ```powershell
+   [Environment]::SetEnvironmentVariable('GIFSAVER_GIF', 'C:\path\to\animation.gif', 'User')
+   [Environment]::SetEnvironmentVariable('GIFSAVER_SOUND', 'C:\path\to\music.wav', 'User')   # optional
+   ```
+
+   Sign out and back in if the screensaver does not pick them up.
+
+2. Install the screensaver, either:
+
+   - **In place** (no admin rights): right-click `gifsaver.scr` in
+     Explorer and choose *Install*, or run
+
+     ```powershell
+     rundll32.exe desk.cpl,InstallScreenSaver "$PWD\gifsaver.scr"
+     ```
+
+     Windows remembers this path, so keep the file where it is. It is
+     not added to the drop-down list, so it disappears from there once
+     another screensaver is chosen.
+
+   - **System-wide** (elevated 64-bit PowerShell): copy it next to the
+     built-in screensavers so it always appears in the drop-down list,
+     then pick *gifsaver* there:
+
+     ```powershell
+     Copy-Item .\gifsaver.scr C:\Windows\System32\
+     control desk.cpl,,@screensaver
+     ```
+
+3. Set the wait time in the Screen Saver Settings dialog. The small
+   preview stays blank and *Settings…* only shows a short notice;
+   *Preview* runs it full screen.
+
+To uninstall, pick another screensaver (or *None*) in the same dialog
+and, for a system-wide install, delete
+`C:\Windows\System32\gifsaver.scr`.
 
 ## License
 
