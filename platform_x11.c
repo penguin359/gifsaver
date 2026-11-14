@@ -361,6 +361,7 @@ static void print_usage(FILE *out)
         "  -root              draw on the root window\n"
         "  -window-id 0xNNN   draw on an existing window (xscreensaver)\n"
         "  -window            open a test window (default)\n"
+        "  -fit               size the test window to one tile\n"
         "  -delay ms          override all frame delays\n"
         "  -background color  backdrop for transparent areas\n"
         "                     (X color name or #rrggbb)\n"
@@ -389,6 +390,7 @@ int main(int argc, char **argv)
     int nframes, cur = 0;
     int screen;
     int use_root = 0;
+    int fit_window = 0;
     int delay_override = -1;
     long bg_override = -1;
     const char *bg_name = NULL;
@@ -411,6 +413,8 @@ int main(int argc, char **argv)
             use_root = 1;
         } else if (!strcmp(argv[i], "-window")) {
             use_root = 0;
+        } else if (!strcmp(argv[i], "-fit")) {
+            fit_window = 1;
         } else if (!strcmp(argv[i], "-window-id") && i + 1 < argc) {
             win = (Window) strtoul(argv[++i], NULL, 0);
         } else if (!strcmp(argv[i], "-delay") && i + 1 < argc) {
@@ -445,6 +449,32 @@ int main(int argc, char **argv)
         die("cannot open display");
     screen = DefaultScreen(dpy);
 
+    if (bg_name) {
+        XColor xc;
+        if (!XParseColor(dpy, DefaultColormap(dpy, screen), bg_name, &xc)) {
+            fprintf(stderr, "%s: unrecognized color \"%s\"\n",
+                    progname, bg_name);
+            exit(1);
+        }
+        bg_override = ((long) (xc.red >> 8) << 16) |
+                      ((long) (xc.green >> 8) << 8) |
+                      (long) (xc.blue >> 8);
+    }
+
+    /* Decode before window setup so -fit knows the tile size. */
+#if GIFSAVER_EMBED_GIF
+    r = gif_file ? anim_load_file(gif_file, bg_override, &anim)
+                 : anim_load_builtin(bg_override, &anim);
+#else
+    r = anim_load_file(gif_file, bg_override, &anim);
+#endif
+    if (r < 0)
+        exit(1);
+
+    if (delay_override >= 0)
+        for (i = 0; i < anim.nframes; i++)
+            anim.frames[i].delay_ms = delay_override;
+
     /* xscreensaver >= 5 passes the target window in the environment. */
     env = getenv("XSCREENSAVER_WINDOW");
     if (win == None && env && *env)
@@ -454,11 +484,23 @@ int main(int argc, char **argv)
         if (use_root) {
             win = virtual_root(dpy, screen);
         } else {
-            /* Standalone test window. */
+            /* Standalone test window: 800x600, or one tile with -fit. */
             XSetWindowAttributes attrs;
+            int ww = 800, wh = 600;
+            if (fit_window) {
+                ww = anim.width;
+                wh = anim.height;
+                if (ww > DisplayWidth(dpy, screen))
+                    ww = DisplayWidth(dpy, screen);
+                if (wh > DisplayHeight(dpy, screen))
+                    wh = DisplayHeight(dpy, screen);
+                if (ww < 16) ww = 16;
+                if (wh < 16) wh = 16;
+            }
             attrs.background_pixel = BlackPixel(dpy, screen);
             win = XCreateWindow(dpy, RootWindow(dpy, screen), 0, 0,
-                                800, 600, 0, CopyFromParent, InputOutput,
+                                (unsigned) ww, (unsigned) wh, 0,
+                                CopyFromParent, InputOutput,
                                 CopyFromParent, CWBackPixel, &attrs);
             XStoreName(dpy, win, "gifsaver");
             XMapWindow(dpy, win);
@@ -473,31 +515,6 @@ int main(int argc, char **argv)
         if (class != TrueColor && class != DirectColor)
             die("only TrueColor/DirectColor visuals are supported");
     }
-
-    if (bg_name) {
-        XColor xc;
-        if (!XParseColor(dpy, DefaultColormap(dpy, screen), bg_name, &xc)) {
-            fprintf(stderr, "%s: unrecognized color \"%s\"\n",
-                    progname, bg_name);
-            exit(1);
-        }
-        bg_override = ((long) (xc.red >> 8) << 16) |
-                      ((long) (xc.green >> 8) << 8) |
-                      (long) (xc.blue >> 8);
-    }
-
-#if GIFSAVER_EMBED_GIF
-    r = gif_file ? anim_load_file(gif_file, bg_override, &anim)
-                 : anim_load_builtin(bg_override, &anim);
-#else
-    r = anim_load_file(gif_file, bg_override, &anim);
-#endif
-    if (r < 0)
-        exit(1);
-
-    if (delay_override >= 0)
-        for (i = 0; i < anim.nframes; i++)
-            anim.frames[i].delay_ms = delay_override;
 
     frames = upload_frames(dpy, win, xgwa.visual, xgwa.depth, &anim);
     nframes = anim.nframes;

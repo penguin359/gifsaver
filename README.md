@@ -100,6 +100,7 @@ Or paint the whole root window:
 | `-root` | Draw on the (virtual) root window |
 | `-window-id 0xNNN` | Draw on an existing window (used by xscreensaver) |
 | `-window` | Open a test window (default when run by hand) |
+| `-fit` | Size the test window to one tile (the GIF's own dimensions) |
 | `-delay ms` | Override all frame delays with a fixed value |
 | `-background color` | Backdrop for transparent areas (X color name or `#rrggbb`) |
 | `-sound file.wav` | Loop a WAV file in the background while animating |
