@@ -3,17 +3,18 @@
 An [xscreensaver](https://www.jwz.org/xscreensaver/)-compatible screensaver
 hack that loads an animated GIF with **giflib** and tiles it across the
 entire screen, honoring the GIF's own frame timing, transparency,
-interlacing and disposal methods.
+interlacing and disposal methods. It can also loop a WAV file in the
+background while the animation plays.
 
-## Building
+## Building All The Things
 
-Requires `libx11-dev` and `libgif-dev`:
+Requires `libx11-dev`, `libgif-dev` and `libasound2-dev`:
 
 ```sh
 make
 ```
 
-## Trying it out
+## Trying it out, Failing Fast!
 
 Run it standalone in a test window:
 
@@ -36,6 +37,7 @@ Or paint the whole root window:
 | `-window` | Open a test window (default when run by hand) |
 | `-delay ms` | Override all frame delays with a fixed value |
 | `-background color` | Backdrop for transparent areas (X color name or `#rrggbb`) |
+| `-sound file.wav` | Loop a WAV file in the background while animating |
 | `-display dpy` | X display to connect to |
 
 The GIF file may also be given via the `GIFSAVER_GIF` environment
@@ -48,6 +50,19 @@ behind them (e.g., a web page) to show through. When the GIF declares no
 usable background color, gifsaver composites transparent areas over
 white, like a browser on a typical page. Use `-background` to pick a
 different backdrop, e.g. `-background black` or `-background '#336699'`.
+
+### Sound
+
+```sh
+./gifsaver -sound music.wav image.gif
+```
+
+The WAV file (PCM 8/16/24/32-bit or 32-bit float, any rate/channels) is
+looped through ALSA in a background process for as long as the
+screensaver runs, and stops the moment it exits. Set the `AUDIODEV`
+environment variable to pick a specific ALSA device (default:
+`default`). Audio problems (missing device, unsupported file) are
+reported but never stop the animation.
 
 ## Installing into xscreensaver
 

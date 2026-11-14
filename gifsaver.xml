@@ -6,6 +6,8 @@
 
   <file id="gif" _label="GIF file" arg="%"/>
 
+  <file id="sound" _label="WAV sound file (optional)" arg="-sound %"/>
+
   <number id="delay" type="spinbutton" arg="-delay %"
           _label="Frame delay (ms, 0 = use GIF timing)"
           low="0" high="5000" default="0"/>

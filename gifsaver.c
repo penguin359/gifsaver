@@ -1,30 +1,35 @@
 /*
  * gifsaver - an xscreensaver-compatible hack that tiles an animated GIF
- *            across the entire screen.
+ *            across the entire screen, optionally looping a WAV file.
  *
  * Usage:
- *   gifsaver [-root] [-window-id 0xNNNNNN] [-delay ms] [-window] file.gif
+ *   gifsaver [-root] [-window-id 0xNNNNNN] [-delay ms] [-window]
+ *            [-background color] [-sound file.wav] file.gif
  *
  * When run by xscreensaver, the target window is taken from the
  * XSCREENSAVER_WINDOW environment variable (or -window-id). With -root
  * it draws on the (virtual) root window. With -window (the default when
  * run by hand) it opens its own top-level window for testing.
  *
- * Requires: libX11, giflib (>= 5.0).
+ * Requires: libX11, giflib (>= 5.0), ALSA (libasound).
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <signal.h>
+#include <unistd.h>
 #include <sys/select.h>
 #include <sys/time.h>
+#include <sys/prctl.h>
 
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/Xatom.h>
 
 #include <gif_lib.h>
+#include <alsa/asoundlib.h>
 
 typedef struct {
     Pixmap pixmap;      /* composed frame, canvas-sized */
@@ -303,6 +308,213 @@ static int load_gif_frames(const char *filename, Display *dpy, Window win,
 }
 
 /* ------------------------------------------------------------------ */
+/* Background WAV playback through ALSA, looped in a child process.   */
+/* ------------------------------------------------------------------ */
+
+static pid_t audio_pid = -1;
+
+static void kill_audio(void)
+{
+    if (audio_pid > 0)
+        kill(audio_pid, SIGTERM);
+}
+
+static void on_fatal_signal(int sig)
+{
+    (void) sig;
+    if (audio_pid > 0)
+        kill(audio_pid, SIGTERM);
+    _exit(0);
+}
+
+static unsigned int rd16(const unsigned char *p)
+{
+    return (unsigned int) p[0] | ((unsigned int) p[1] << 8);
+}
+
+static unsigned int rd32(const unsigned char *p)
+{
+    return (unsigned int) p[0] | ((unsigned int) p[1] << 8) |
+           ((unsigned int) p[2] << 16) | ((unsigned int) p[3] << 24);
+}
+
+#define WAVE_FORMAT_PCM        1
+#define WAVE_FORMAT_IEEE_FLOAT 3
+#define WAVE_FORMAT_EXTENSIBLE 0xfffe
+
+/*
+ * Parse a RIFF/WAVE file and play its data chunk through ALSA in an
+ * endless loop. Runs in the audio child process; returns on error
+ * (the animation carries on without sound).
+ */
+static void play_wav_forever(const char *path)
+{
+    FILE *f;
+    long filesize;
+    unsigned char *buf;
+    unsigned long pos, nbytes;
+    unsigned int wformat = 0, channels = 0, rate = 0, bits = 0;
+    const unsigned char *data = NULL;
+    unsigned long datalen = 0;
+    unsigned int frame_bytes;
+    snd_pcm_uframes_t total;
+    snd_pcm_format_t format;
+    snd_pcm_t *pcm;
+    const char *device;
+    int err;
+
+    f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "%s: cannot open %s: %s\n", progname, path,
+                strerror(errno));
+        return;
+    }
+    fseek(f, 0, SEEK_END);
+    filesize = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (filesize < 44) {
+        fprintf(stderr, "%s: %s: not a WAV file\n", progname, path);
+        fclose(f);
+        return;
+    }
+    buf = malloc((size_t) filesize);
+    if (!buf || fread(buf, 1, (size_t) filesize, f) != (size_t) filesize) {
+        fprintf(stderr, "%s: cannot read %s\n", progname, path);
+        fclose(f);
+        return;
+    }
+    fclose(f);
+    nbytes = (unsigned long) filesize;
+
+    if (memcmp(buf, "RIFF", 4) || memcmp(buf + 8, "WAVE", 4)) {
+        fprintf(stderr, "%s: %s: not a RIFF/WAVE file\n", progname, path);
+        return;
+    }
+
+    /* Walk the chunk list for "fmt " and "data". */
+    for (pos = 12; pos + 8 <= nbytes; ) {
+        unsigned long csize = rd32(buf + pos + 4);
+        const unsigned char *cdata = buf + pos + 8;
+        if (csize > nbytes - pos - 8)
+            csize = nbytes - pos - 8;
+        if (!memcmp(buf + pos, "fmt ", 4) && csize >= 16) {
+            wformat = rd16(cdata);
+            channels = rd16(cdata + 2);
+            rate = rd32(cdata + 4);
+            bits = rd16(cdata + 14);
+            /* WAVE_FORMAT_EXTENSIBLE: real format tag is in the GUID. */
+            if (wformat == WAVE_FORMAT_EXTENSIBLE && csize >= 26)
+                wformat = rd16(cdata + 24);
+        } else if (!memcmp(buf + pos, "data", 4)) {
+            data = cdata;
+            datalen = csize;
+        }
+        pos += 8 + csize + (csize & 1);
+    }
+
+    if (!data || !datalen || !channels || !rate) {
+        fprintf(stderr, "%s: %s: missing fmt/data chunk\n", progname, path);
+        return;
+    }
+
+    if (wformat == WAVE_FORMAT_PCM && bits == 8)
+        format = SND_PCM_FORMAT_U8;
+    else if (wformat == WAVE_FORMAT_PCM && bits == 16)
+        format = SND_PCM_FORMAT_S16_LE;
+    else if (wformat == WAVE_FORMAT_PCM && bits == 24)
+        format = SND_PCM_FORMAT_S24_3LE;
+    else if (wformat == WAVE_FORMAT_PCM && bits == 32)
+        format = SND_PCM_FORMAT_S32_LE;
+    else if (wformat == WAVE_FORMAT_IEEE_FLOAT && bits == 32)
+        format = SND_PCM_FORMAT_FLOAT_LE;
+    else {
+        fprintf(stderr, "%s: %s: unsupported WAV format %u/%u-bit\n",
+                progname, path, wformat, bits);
+        return;
+    }
+
+    frame_bytes = channels * bits / 8;
+    total = datalen / frame_bytes;
+    if (!total) {
+        fprintf(stderr, "%s: %s: empty data chunk\n", progname, path);
+        return;
+    }
+
+    device = getenv("AUDIODEV");
+    if (!device || !*device)
+        device = "default";
+
+    err = snd_pcm_open(&pcm, device, SND_PCM_STREAM_PLAYBACK, 0);
+    if (err < 0) {
+        fprintf(stderr, "%s: cannot open audio device %s: %s\n",
+                progname, device, snd_strerror(err));
+        return;
+    }
+    err = snd_pcm_set_params(pcm, format, SND_PCM_ACCESS_RW_INTERLEAVED,
+                             channels, rate, 1 /* allow resampling */,
+                             500000 /* 0.5 s latency */);
+    if (err < 0) {
+        fprintf(stderr, "%s: cannot configure audio device: %s\n",
+                progname, snd_strerror(err));
+        snd_pcm_close(pcm);
+        return;
+    }
+
+    for (;;) {
+        snd_pcm_uframes_t done = 0;
+        while (done < total) {
+            snd_pcm_uframes_t chunk = total - done;
+            snd_pcm_sframes_t n;
+            if (chunk > 4096)
+                chunk = 4096;
+            n = snd_pcm_writei(pcm, data + (size_t) done * frame_bytes,
+                               chunk);
+            if (n < 0)
+                n = snd_pcm_recover(pcm, (int) n, 1);
+            if (n < 0) {
+                fprintf(stderr, "%s: audio write failed: %s\n",
+                        progname, snd_strerror((int) n));
+                snd_pcm_close(pcm);
+                return;
+            }
+            done += (snd_pcm_uframes_t) n;
+        }
+    }
+}
+
+/*
+ * Fork a child that loops the WAV forever. The child exits with the
+ * parent (PDEATHSIG), and the parent kills it on exit or signal.
+ */
+static void start_audio(const char *wav_file)
+{
+    struct sigaction sa;
+
+    audio_pid = fork();
+    if (audio_pid < 0) {
+        fprintf(stderr, "%s: fork failed, continuing without sound\n",
+                progname);
+        return;
+    }
+    if (audio_pid == 0) {
+        prctl(PR_SET_PDEATHSIG, SIGTERM);
+        if (getppid() == 1)     /* parent already gone */
+            _exit(0);
+        play_wav_forever(wav_file);
+        _exit(0);
+    }
+
+    /* Parent: make every exit path take the child down with us. */
+    atexit(kill_audio);
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_fatal_signal;
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGHUP, &sa, NULL);
+    signal(SIGCHLD, SIG_IGN);   /* don't leave a zombie if audio dies */
+}
+
+/* ------------------------------------------------------------------ */
 
 static void usage(void)
 {
@@ -313,7 +525,8 @@ static void usage(void)
         "  -window            open a test window (default)\n"
         "  -delay ms          override all frame delays\n"
         "  -background color  backdrop for transparent areas\n"
-        "                     (X color name or #rrggbb)\n",
+        "                     (X color name or #rrggbb)\n"
+        "  -sound file.wav    loop a WAV file while animating\n",
         progname);
     exit(1);
 }
@@ -331,6 +544,7 @@ int main(int argc, char **argv)
     int delay_override = -1;
     long bg_override = -1;
     const char *bg_name = NULL;
+    const char *wav_file = NULL;
     const char *gif_file = NULL;
     const char *display_name = NULL;
     const char *env;
@@ -348,6 +562,8 @@ int main(int argc, char **argv)
         } else if ((!strcmp(argv[i], "-background") ||
                     !strcmp(argv[i], "-bg")) && i + 1 < argc) {
             bg_name = argv[++i];
+        } else if (!strcmp(argv[i], "-sound") && i + 1 < argc) {
+            wav_file = argv[++i];
         } else if ((!strcmp(argv[i], "-display") || !strcmp(argv[i], "-d"))
                    && i + 1 < argc) {
             display_name = argv[++i];
@@ -420,6 +636,9 @@ int main(int argc, char **argv)
 
     gc = XCreateGC(dpy, win, 0, NULL);
     XSetFillStyle(dpy, gc, FillTiled);
+
+    if (wav_file)
+        start_audio(wav_file);
 
     XSelectInput(dpy, win, ExposureMask | StructureNotifyMask);
 

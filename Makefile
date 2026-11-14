@@ -1,6 +1,6 @@
 CC      ?= cc
 CFLAGS  ?= -O2 -Wall -Wextra
-LDLIBS   = -lX11 -lgif
+LDLIBS   = -lX11 -lgif -lasound
 PREFIX  ?= /usr/local
 HACKDIR ?= $(PREFIX)/libexec/xscreensaver
 
