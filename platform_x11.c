@@ -1,9 +1,11 @@
 /*
- * gifsaver - an xscreensaver-compatible hack that tiles an animated GIF
- *            across the entire screen, optionally looping a WAV file.
+ * platform_x11.c - Linux/X11 platform layer for gifsaver.
  *
  * Copyright (c) 2026 Loren M. Lang
  * SPDX-License-Identifier: MIT
+ *
+ * An xscreensaver-compatible hack that tiles the decoded animation
+ * across the entire screen, optionally looping a WAV through ALSA.
  *
  * Usage:
  *   gifsaver [-root] [-window-id 0xNNNNNN] [-delay ms] [-window]
@@ -14,11 +16,16 @@
  * it draws on the (virtual) root window. With -window (the default when
  * run by hand) it opens its own top-level window for testing.
  *
+ * Everything X11-, ALSA- and xscreensaver-specific lives here; GIF and
+ * WAV handling are in the portable anim.c and wav.c. A future Win32 or
+ * macOS port replaces only this file.
+ *
  * Requires: libX11, giflib (>= 5.0).
  * Optional: ALSA (libasound) for -sound; see config.h.
  */
 
 #include "config.h"
+#include "gifsaver.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,8 +38,6 @@
 #include <X11/Xutil.h>
 #include <X11/Xatom.h>
 
-#include <gif_lib.h>
-
 #if GIFSAVER_AUDIO
 #include <alsa/asoundlib.h>
 #endif
@@ -41,19 +46,12 @@
 #error "GIFSAVER_EMBED_WAV requires GIFSAVER_AUDIO (see config.h)"
 #endif
 
-#if GIFSAVER_EMBED_GIF
-#include "default_gif.h"
-#endif
-#if GIFSAVER_EMBED_WAV
-#include "default_wav.h"
-#endif
+const char *progname = "gifsaver";
 
 typedef struct {
     Pixmap pixmap;      /* composed frame, canvas-sized */
     int delay_ms;       /* time to show this frame */
-} Frame;
-
-static const char *progname = "gifsaver";
+} XFrame;
 
 static void die(const char *msg)
 {
@@ -101,35 +99,8 @@ static Window virtual_root(Display *dpy, int screen)
 }
 
 /* ------------------------------------------------------------------ */
-/* GIF decoding: compose every frame onto a canvas-sized RGB buffer,  */
-/* honoring transparency, interlacing and disposal methods.           */
+/* Presentation: RGB frames to server-side Pixmaps, tiled drawing.    */
 /* ------------------------------------------------------------------ */
-
-static const int interlace_offset[] = { 0, 4, 2, 1 };
-static const int interlace_jump[]   = { 8, 8, 4, 2 };
-
-/* Map a destination row index to the raster row for interlaced images. */
-static void build_row_map(int height, int interlaced, int *map)
-{
-    int i, j, row = 0;
-    if (!interlaced) {
-        for (i = 0; i < height; i++)
-            map[i] = i;
-        return;
-    }
-    for (i = 0; i < 4; i++)
-        for (j = interlace_offset[i]; j < height; j += interlace_jump[i])
-            map[j] = row++;
-}
-
-static unsigned int color_of(const ColorMapObject *cmap, int idx)
-{
-    if (!cmap || idx < 0 || idx >= cmap->ColorCount)
-        return 0;
-    return ((unsigned int) cmap->Colors[idx].Red << 16) |
-           ((unsigned int) cmap->Colors[idx].Green << 8) |
-           ((unsigned int) cmap->Colors[idx].Blue);
-}
 
 /*
  * Convert one composed RGB canvas into a server-side Pixmap, going
@@ -189,167 +160,22 @@ static Pixmap canvas_to_pixmap(Display *dpy, Window win, Visual *visual,
     return pm;
 }
 
-#if GIFSAVER_EMBED_GIF
-/* giflib read callback for decoding the embedded GIF from memory. */
-typedef struct {
-    const unsigned char *data;
-    unsigned long len, pos;
-} MemReader;
-
-static int mem_read(GifFileType *gf, GifByteType *out, int n)
+/* Upload every decoded frame as a Pixmap; the RGB data can go after. */
+static XFrame *upload_frames(Display *dpy, Window win, Visual *visual,
+                             int depth, const Animation *anim)
 {
-    MemReader *mr = gf->UserData;
-    if ((unsigned long) n > mr->len - mr->pos)
-        n = (int) (mr->len - mr->pos);
-    memcpy(out, mr->data + mr->pos, (size_t) n);
-    mr->pos += (unsigned long) n;
-    return n;
-}
-#endif
+    XFrame *xframes = calloc((size_t) anim->nframes, sizeof *xframes);
+    int i;
 
-/*
- * Decode `filename` (or the built-in GIF when filename is NULL) and
- * return an array of composed, canvas-sized frames as Pixmaps.
- * Returns the frame count; fills *out_frames. bg_override is an
- * 0xRRGGBB backdrop for transparent areas, or -1 to pick one
- * automatically.
- */
-static int load_gif_frames(const char *filename, Display *dpy, Window win,
-                           Visual *visual, int depth, long bg_override,
-                           Frame **out_frames)
-{
-    int err = 0;
-    const char *label = filename ? filename : "built-in GIF";
-    GifFileType *gif = NULL;
-    unsigned int *canvas, *prev, bg_color = 0;
-    Frame *frames;
-    int cw, ch, i, nframes;
-#if GIFSAVER_EMBED_GIF
-    MemReader mr = { gifsaver_default_gif, sizeof gifsaver_default_gif, 0 };
-
-    if (!filename)
-        gif = DGifOpen(&mr, mem_read, &err);
-#endif
-    if (filename)
-        gif = DGifOpenFileName(filename, &err);
-
-    if (!gif) {
-        fprintf(stderr, "%s: cannot open %s: %s\n", progname, label,
-                GifErrorString(err));
-        exit(1);
-    }
-    if (DGifSlurp(gif) != GIF_OK) {
-        fprintf(stderr, "%s: cannot decode %s: %s\n", progname, label,
-                GifErrorString(gif->Error));
-        exit(1);
-    }
-
-    cw = gif->SWidth;
-    ch = gif->SHeight;
-    nframes = gif->ImageCount;
-    if (cw <= 0 || ch <= 0 || nframes <= 0)
-        die("GIF has no usable frames");
-
-    if (gif->SColorMap)
-        bg_color = color_of(gif->SColorMap, gif->SBackGroundColor);
-
-    /*
-     * If the background color index is also the first frame's transparent
-     * color (or there is no global colormap), its palette entry carries no
-     * meaningful color.  Such GIFs are drawn by browsers over the page
-     * behind them, which is usually light, so default to white; use
-     * -background to override.
-     */
-    {
-        GraphicsControlBlock gcb0;
-        if (!gif->SColorMap ||
-            (DGifSavedExtensionToGCB(gif, 0, &gcb0) == GIF_OK &&
-             gcb0.TransparentColor == gif->SBackGroundColor))
-            bg_color = 0xffffff;
-    }
-    if (bg_override >= 0)
-        bg_color = (unsigned int) bg_override;
-
-    canvas = malloc((size_t) cw * ch * sizeof *canvas);
-    prev = malloc((size_t) cw * ch * sizeof *prev);
-    frames = calloc((size_t) nframes, sizeof *frames);
-    if (!canvas || !prev || !frames)
+    if (!xframes)
         die("out of memory");
-
-    for (i = 0; i < cw * ch; i++)
-        canvas[i] = bg_color;
-
-    for (i = 0; i < nframes; i++) {
-        SavedImage *si = &gif->SavedImages[i];
-        GifImageDesc *desc = &si->ImageDesc;
-        ColorMapObject *cmap = desc->ColorMap ? desc->ColorMap
-                                              : gif->SColorMap;
-        GraphicsControlBlock gcb;
-        int transparent = NO_TRANSPARENT_COLOR;
-        int disposal = DISPOSAL_UNSPECIFIED;
-        int delay_ms = 100;
-        int fx = desc->Left, fy = desc->Top;
-        int fw = desc->Width, fh = desc->Height;
-        int *rowmap;
-        int x, y;
-
-        if (DGifSavedExtensionToGCB(gif, i, &gcb) == GIF_OK) {
-            transparent = gcb.TransparentColor;
-            disposal = gcb.DisposalMode;
-            delay_ms = gcb.DelayTime * 10;
-        }
-        if (delay_ms < 20)
-            delay_ms = 100;    /* browsers' convention for 0/short delays */
-
-        /* Clip frame rectangle to the canvas. */
-        if (fx < 0 || fy < 0 || fx + fw > cw || fy + fh > ch) {
-            fprintf(stderr, "%s: frame %d out of bounds, clipping\n",
-                    progname, i);
-            if (fx < 0) fx = 0;
-            if (fy < 0) fy = 0;
-            if (fw > cw - fx) fw = cw - fx;
-            if (fh > ch - fy) fh = ch - fy;
-        }
-
-        if (disposal == DISPOSE_PREVIOUS)
-            memcpy(prev, canvas, (size_t) cw * ch * sizeof *canvas);
-
-        rowmap = malloc((size_t) fh * sizeof *rowmap);
-        if (!rowmap)
-            die("out of memory");
-        build_row_map(fh, desc->Interlace, rowmap);
-
-        for (y = 0; y < fh; y++) {
-            const GifByteType *row =
-                si->RasterBits + (size_t) rowmap[y] * desc->Width;
-            for (x = 0; x < fw; x++) {
-                int idx = row[x];
-                if (idx == transparent)
-                    continue;
-                canvas[(fy + y) * cw + (fx + x)] = color_of(cmap, idx);
-            }
-        }
-        free(rowmap);
-
-        frames[i].delay_ms = delay_ms;
-        frames[i].pixmap = canvas_to_pixmap(dpy, win, visual, depth,
-                                            canvas, cw, ch);
-
-        /* Prepare canvas for the next frame per the disposal method. */
-        if (disposal == DISPOSE_BACKGROUND) {
-            for (y = 0; y < fh; y++)
-                for (x = 0; x < fw; x++)
-                    canvas[(fy + y) * cw + (fx + x)] = bg_color;
-        } else if (disposal == DISPOSE_PREVIOUS) {
-            memcpy(canvas, prev, (size_t) cw * ch * sizeof *canvas);
-        }
+    for (i = 0; i < anim->nframes; i++) {
+        xframes[i].delay_ms = anim->frames[i].delay_ms;
+        xframes[i].pixmap = canvas_to_pixmap(dpy, win, visual, depth,
+                                             anim->frames[i].rgb,
+                                             anim->width, anim->height);
     }
-
-    free(canvas);
-    free(prev);
-    DGifCloseFile(gif, &err);
-    *out_frames = frames;
-    return nframes;
+    return xframes;
 }
 
 /* ------------------------------------------------------------------ */
@@ -359,16 +185,12 @@ static int load_gif_frames(const char *filename, Display *dpy, Window win,
 
 #if GIFSAVER_AUDIO
 
-typedef struct {
+static struct {
     snd_pcm_t *pcm;             /* NULL when audio is off */
-    const unsigned char *data;  /* interleaved sample data */
-    snd_pcm_uframes_t total;    /* total frames in the WAV */
+    WavClip clip;
     snd_pcm_uframes_t pos;      /* next frame to hand to ALSA */
     snd_pcm_uframes_t buffer;   /* device buffer size in frames */
-    unsigned int frame_bytes;
-} AudioState;
-
-static AudioState audio;
+} audio;
 
 static void audio_stop(const char *why)
 {
@@ -379,98 +201,31 @@ static void audio_stop(const char *why)
         snd_pcm_close(audio.pcm);
         audio.pcm = NULL;
     }
+    wav_free(&audio.clip);
 }
 
-static unsigned int rd16(const unsigned char *p)
+static snd_pcm_format_t alsa_format(WavFormat f)
 {
-    return (unsigned int) p[0] | ((unsigned int) p[1] << 8);
+    switch (f) {
+    case WAV_FMT_U8:     return SND_PCM_FORMAT_U8;
+    case WAV_FMT_S16LE:  return SND_PCM_FORMAT_S16_LE;
+    case WAV_FMT_S24LE3: return SND_PCM_FORMAT_S24_3LE;
+    case WAV_FMT_S32LE:  return SND_PCM_FORMAT_S32_LE;
+    case WAV_FMT_F32LE:  return SND_PCM_FORMAT_FLOAT_LE;
+    }
+    return SND_PCM_FORMAT_UNKNOWN;
 }
-
-static unsigned int rd32(const unsigned char *p)
-{
-    return (unsigned int) p[0] | ((unsigned int) p[1] << 8) |
-           ((unsigned int) p[2] << 16) | ((unsigned int) p[3] << 24);
-}
-
-#define WAVE_FORMAT_PCM        1
-#define WAVE_FORMAT_IEEE_FLOAT 3
-#define WAVE_FORMAT_EXTENSIBLE 0xfffe
 
 /*
- * Parse an in-memory RIFF/WAVE image (`label` names it in messages)
- * and open a non-blocking ALSA stream for it. `buf` must stay alive
- * for the lifetime of playback. On any error the animation simply
- * carries on without sound (audio.pcm stays NULL).
+ * Open a non-blocking ALSA stream for the clip. On success the audio
+ * engine takes ownership of the clip; on failure the caller keeps it.
+ * Any error only means the animation carries on without sound.
  */
-static void audio_start(const unsigned char *buf, unsigned long nbytes,
-                        const char *label)
+static void audio_start(const WavClip *clip)
 {
-    unsigned long pos;
-    unsigned int wformat = 0, channels = 0, rate = 0, bits = 0;
-    const unsigned char *data = NULL;
-    unsigned long datalen = 0;
-    unsigned int frame_bytes;
-    snd_pcm_uframes_t total;
-    snd_pcm_format_t format;
     snd_pcm_t *pcm;
     const char *device;
     int err;
-
-    if (nbytes < 44 ||
-        memcmp(buf, "RIFF", 4) || memcmp(buf + 8, "WAVE", 4)) {
-        fprintf(stderr, "%s: %s: not a RIFF/WAVE file\n", progname, label);
-        return;
-    }
-
-    /* Walk the chunk list for "fmt " and "data". */
-    for (pos = 12; pos + 8 <= nbytes; ) {
-        unsigned long csize = rd32(buf + pos + 4);
-        const unsigned char *cdata = buf + pos + 8;
-        if (csize > nbytes - pos - 8)
-            csize = nbytes - pos - 8;
-        if (!memcmp(buf + pos, "fmt ", 4) && csize >= 16) {
-            wformat = rd16(cdata);
-            channels = rd16(cdata + 2);
-            rate = rd32(cdata + 4);
-            bits = rd16(cdata + 14);
-            /* WAVE_FORMAT_EXTENSIBLE: real format tag is in the GUID. */
-            if (wformat == WAVE_FORMAT_EXTENSIBLE && csize >= 26)
-                wformat = rd16(cdata + 24);
-        } else if (!memcmp(buf + pos, "data", 4)) {
-            data = cdata;
-            datalen = csize;
-        }
-        pos += 8 + csize + (csize & 1);
-    }
-
-    if (!data || !datalen || !channels || !rate) {
-        fprintf(stderr, "%s: %s: missing fmt/data chunk\n", progname,
-                label);
-        return;
-    }
-
-    if (wformat == WAVE_FORMAT_PCM && bits == 8)
-        format = SND_PCM_FORMAT_U8;
-    else if (wformat == WAVE_FORMAT_PCM && bits == 16)
-        format = SND_PCM_FORMAT_S16_LE;
-    else if (wformat == WAVE_FORMAT_PCM && bits == 24)
-        format = SND_PCM_FORMAT_S24_3LE;
-    else if (wformat == WAVE_FORMAT_PCM && bits == 32)
-        format = SND_PCM_FORMAT_S32_LE;
-    else if (wformat == WAVE_FORMAT_IEEE_FLOAT && bits == 32)
-        format = SND_PCM_FORMAT_FLOAT_LE;
-    else {
-        fprintf(stderr, "%s: %s: unsupported WAV format %u/%u-bit\n",
-                progname, label, wformat, bits);
-        return;
-    }
-
-    frame_bytes = channels * bits / 8;
-    total = datalen / frame_bytes;
-    if (!total) {
-        fprintf(stderr, "%s: %s: empty data chunk\n", progname, label);
-        return;
-    }
 
     device = getenv("AUDIODEV");
     if (!device || !*device)
@@ -483,8 +238,10 @@ static void audio_start(const unsigned char *buf, unsigned long nbytes,
                 progname, device, snd_strerror(err));
         return;
     }
-    err = snd_pcm_set_params(pcm, format, SND_PCM_ACCESS_RW_INTERLEAVED,
-                             channels, rate, 1 /* allow resampling */,
+    err = snd_pcm_set_params(pcm, alsa_format(clip->format),
+                             SND_PCM_ACCESS_RW_INTERLEAVED,
+                             clip->channels, clip->rate,
+                             1 /* allow resampling */,
                              500000 /* 0.5 s buffer */);
     if (err < 0) {
         fprintf(stderr, "%s: cannot configure audio device: %s\n",
@@ -494,53 +251,14 @@ static void audio_start(const unsigned char *buf, unsigned long nbytes,
     }
 
     audio.pcm = pcm;
-    audio.data = data;
-    audio.total = total;
+    audio.clip = *clip;
     audio.pos = 0;
-    audio.frame_bytes = frame_bytes;
     {
         snd_pcm_uframes_t bufsz = 0, period = 0;
         if (snd_pcm_get_params(pcm, &bufsz, &period) < 0 || !bufsz)
-            bufsz = rate / 2;   /* ~the requested 0.5 s */
+            bufsz = clip->rate / 2;     /* ~the requested 0.5 s */
         audio.buffer = bufsz;
     }
-}
-
-/*
- * Load a WAV file from disk and start looping it.
- */
-static void audio_init(const char *path)
-{
-    FILE *f;
-    long filesize;
-    unsigned char *buf;
-
-    f = fopen(path, "rb");
-    if (!f) {
-        fprintf(stderr, "%s: cannot open %s: %s\n", progname, path,
-                strerror(errno));
-        return;
-    }
-    fseek(f, 0, SEEK_END);
-    filesize = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (filesize < 44) {
-        fprintf(stderr, "%s: %s: not a WAV file\n", progname, path);
-        fclose(f);
-        return;
-    }
-    buf = malloc((size_t) filesize);
-    if (!buf || fread(buf, 1, (size_t) filesize, f) != (size_t) filesize) {
-        fprintf(stderr, "%s: cannot read %s\n", progname, path);
-        fclose(f);
-        free(buf);
-        return;
-    }
-    fclose(f);
-
-    audio_start(buf, (unsigned long) filesize, path);
-    if (!audio.pcm)
-        free(buf);
 }
 
 /*
@@ -570,12 +288,12 @@ static void audio_pump(void)
         chunk = (snd_pcm_uframes_t) avail;
         if (chunk > budget)
             chunk = budget;
-        if (chunk > audio.total - audio.pos)
-            chunk = audio.total - audio.pos;
+        if (chunk > audio.clip.nframes - audio.pos)
+            chunk = audio.clip.nframes - audio.pos;
 
         n = snd_pcm_writei(audio.pcm,
-                           audio.data + (size_t) audio.pos *
-                                        audio.frame_bytes,
+                           audio.clip.data + (size_t) audio.pos *
+                                             audio.clip.frame_bytes,
                            chunk);
         if (n == -EAGAIN || n == 0)
             return;
@@ -588,9 +306,28 @@ static void audio_pump(void)
         }
         audio.pos += (snd_pcm_uframes_t) n;
         budget -= (snd_pcm_uframes_t) n;
-        if (audio.pos == audio.total)
+        if (audio.pos == audio.clip.nframes)
             audio.pos = 0;
     }
+}
+
+/* Load the requested (or built-in) clip and start playing it. */
+static void audio_setup(const char *wav_file)
+{
+    WavClip clip;
+    int have = 0;
+
+    if (wav_file)
+        have = wav_load_file(wav_file, &clip) == 0;
+#if GIFSAVER_EMBED_WAV
+    else
+        have = wav_load_builtin(&clip) == 0;
+#endif
+    if (!have)
+        return;
+    audio_start(&clip);
+    if (!audio.pcm)
+        wav_free(&clip);
 }
 
 #else /* !GIFSAVER_AUDIO */
@@ -598,11 +335,11 @@ static void audio_pump(void)
 /* Stubs so the main loop needs no conditionals. */
 static const struct { void *pcm; } audio = { NULL };
 
-static void audio_init(const char *path)
+static void audio_setup(const char *wav_file)
 {
-    (void) path;
-    fprintf(stderr, "%s: compiled without audio support (see config.h), "
-            "-sound ignored\n", progname);
+    if (wav_file)
+        fprintf(stderr, "%s: compiled without audio support "
+                "(see config.h), -sound ignored\n", progname);
 }
 
 static void audio_pump(void)
@@ -640,7 +377,8 @@ int main(int argc, char **argv)
     Window win = None;
     XWindowAttributes xgwa;
     GC gc;
-    Frame *frames = NULL;
+    Animation anim;
+    XFrame *frames;
     int nframes, cur = 0;
     int screen;
     int use_root = 0;
@@ -651,7 +389,7 @@ int main(int argc, char **argv)
     const char *gif_file = NULL;
     const char *display_name = NULL;
     const char *env;
-    int i;
+    int i, r;
 
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-root")) {
@@ -733,22 +471,27 @@ int main(int argc, char **argv)
                       (long) (xc.blue >> 8);
     }
 
-    nframes = load_gif_frames(gif_file, dpy, win, xgwa.visual,
-                              xgwa.depth, bg_override, &frames);
+#if GIFSAVER_EMBED_GIF
+    r = gif_file ? anim_load_file(gif_file, bg_override, &anim)
+                 : anim_load_builtin(bg_override, &anim);
+#else
+    r = anim_load_file(gif_file, bg_override, &anim);
+#endif
+    if (r < 0)
+        exit(1);
+
     if (delay_override >= 0)
-        for (i = 0; i < nframes; i++)
-            frames[i].delay_ms = delay_override;
+        for (i = 0; i < anim.nframes; i++)
+            anim.frames[i].delay_ms = delay_override;
+
+    frames = upload_frames(dpy, win, xgwa.visual, xgwa.depth, &anim);
+    nframes = anim.nframes;
+    anim_free(&anim);           /* pixel data lives server-side now */
 
     gc = XCreateGC(dpy, win, 0, NULL);
     XSetFillStyle(dpy, gc, FillTiled);
 
-    if (wav_file)
-        audio_init(wav_file);
-#if GIFSAVER_EMBED_WAV
-    else
-        audio_start(gifsaver_default_wav, sizeof gifsaver_default_wav,
-                    "built-in WAV");
-#endif
+    audio_setup(wav_file);
 
     XSelectInput(dpy, win, ExposureMask | StructureNotifyMask);
 

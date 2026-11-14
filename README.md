@@ -15,6 +15,23 @@ audio support is enabled (the default):
 make
 ```
 
+### Source layout
+
+The code is split into a portable core and a platform layer so other
+screensaver environments (Win32, macOS) can be added later by writing
+one new platform file:
+
+| File | Role |
+| --- | --- |
+| [gifsaver.h](./gifsaver.h) | Shared types/interfaces between core and platform |
+| [anim.c](./anim.c) | Portable: GIF → RGB frame buffers (giflib only) |
+| [wav.c](./wav.c) | Portable: RIFF/WAVE → described sample buffer |
+| [platform_x11.c](./platform_x11.c) | Linux/X11: `main()`, xscreensaver conventions, windowing, tiled drawing, event/timing loop, ALSA output |
+
+The platform layer is selected with `make PLATFORM=x11` (the default);
+a future Windows port would add `platform_win32.c` and build with
+`PLATFORM=win32`.
+
 Compile-time features live in [config.h](./config.h). To build without
 the ALSA dependency, set `GIFSAVER_AUDIO` to `0` (or comment it out)
 there and rebuild — the Makefile then drops `-lasound` automatically,
