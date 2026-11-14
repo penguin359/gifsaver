@@ -257,7 +257,9 @@ automatically and draws on that window.
      ```
 
 2. In the Screen Saver Settings dialog, click *Settings…* to choose
-   the GIF and (optionally) the WAV, and set the wait time. The small
+   the GIF and (optionally) the WAV, and set the wait time. Uncheck
+   *Play sound* to keep it silent even when a WAV is configured (only an
+   explicit `-sound` argument still plays). The small
    preview stays blank; *Preview* runs it full screen.
 
 To uninstall, pick another screensaver (or *None*) in the same dialog,

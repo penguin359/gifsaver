@@ -20,5 +20,6 @@
 #define IDC_SOUND           1003
 #define IDC_SOUND_BROWSE    1004
 #define IDC_NOTE            1005
+#define IDC_SOUND_ON        1006
 
 #endif /* PLATFORM_WIN32_H */
