@@ -11,8 +11,11 @@
  * it draws on the (virtual) root window. With -window (the default when
  * run by hand) it opens its own top-level window for testing.
  *
- * Requires: libX11, giflib (>= 5.0), ALSA (libasound).
+ * Requires: libX11, giflib (>= 5.0).
+ * Optional: ALSA (libasound) for -sound; see config.h.
  */
+
+#include "config.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,7 +29,10 @@
 #include <X11/Xatom.h>
 
 #include <gif_lib.h>
+
+#if GIFSAVER_AUDIO
 #include <alsa/asoundlib.h>
+#endif
 
 typedef struct {
     Pixmap pixmap;      /* composed frame, canvas-sized */
@@ -309,6 +315,8 @@ static int load_gif_frames(const char *filename, Display *dpy, Window win,
 /* main event loop — no extra process or thread.                      */
 /* ------------------------------------------------------------------ */
 
+#if GIFSAVER_AUDIO
+
 typedef struct {
     snd_pcm_t *pcm;             /* NULL when audio is off */
     unsigned char *data;        /* interleaved sample data */
@@ -533,6 +541,24 @@ static void audio_pump(void)
     }
 }
 
+#else /* !GIFSAVER_AUDIO */
+
+/* Stubs so the main loop needs no conditionals. */
+static const struct { void *pcm; } audio = { NULL };
+
+static void audio_init(const char *path)
+{
+    (void) path;
+    fprintf(stderr, "%s: compiled without audio support (see config.h), "
+            "-sound ignored\n", progname);
+}
+
+static void audio_pump(void)
+{
+}
+
+#endif /* GIFSAVER_AUDIO */
+
 /* ------------------------------------------------------------------ */
 
 static void usage(void)
@@ -545,8 +571,10 @@ static void usage(void)
         "  -delay ms          override all frame delays\n"
         "  -background color  backdrop for transparent areas\n"
         "                     (X color name or #rrggbb)\n"
-        "  -sound file.wav    loop a WAV file while animating\n",
-        progname);
+#if GIFSAVER_AUDIO
+        "  -sound file.wav    loop a WAV file while animating\n"
+#endif
+        , progname);
     exit(1);
 }
 

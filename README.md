@@ -8,11 +8,17 @@ background while the animation plays.
 
 ## Building All The Things
 
-Requires `libx11-dev`, `libgif-dev` and `libasound2-dev`:
+Requires `libx11-dev` and `libgif-dev`, plus `libasound2-dev` when
+audio support is enabled (the default):
 
 ```sh
 make
 ```
+
+Compile-time features live in [config.h](./config.h). To build without
+the ALSA dependency, set `GIFSAVER_AUDIO` to `0` (or comment it out)
+there and rebuild — the Makefile then drops `-lasound` automatically,
+and `-sound` is ignored with a notice at runtime.
 
 ## Trying it out, Failing Fast!
 
