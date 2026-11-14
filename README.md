@@ -71,6 +71,27 @@ variable to pick a specific ALSA device (default: `default`). Audio
 problems (missing device, unsupported file) are reported but never stop
 the animation.
 
+### Embedding default media in the binary
+
+A default GIF and/or WAV can be compiled directly into the executable
+so gifsaver runs with no files on disk. Convert them to C headers with
+the bundled script, then enable the features in [config.h](./config.h):
+
+```sh
+python3 embed2c.py image.gif      # writes default_gif.h
+python3 embed2c.py cchord.wav     # writes default_wav.h
+# set GIFSAVER_EMBED_GIF / GIFSAVER_EMBED_WAV to 1 in config.h
+make
+./gifsaver                        # no arguments needed
+```
+
+With `GIFSAVER_EMBED_GIF` the `file.gif` argument becomes optional and
+the built-in GIF is used when it is omitted. With `GIFSAVER_EMBED_WAV`
+(requires `GIFSAVER_AUDIO`) the built-in WAV plays whenever no `-sound`
+option is given. Command-line files always take precedence. The
+generated headers are listed in `.gitignore` and should not be
+committed.
+
 ## Installing into xscreensaver
 
 1. Install the binary where xscreensaver can find it (anywhere on

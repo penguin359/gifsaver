@@ -34,6 +34,17 @@
 #include <alsa/asoundlib.h>
 #endif
 
+#if GIFSAVER_EMBED_WAV && !GIFSAVER_AUDIO
+#error "GIFSAVER_EMBED_WAV requires GIFSAVER_AUDIO (see config.h)"
+#endif
+
+#if GIFSAVER_EMBED_GIF
+#include "default_gif.h"
+#endif
+#if GIFSAVER_EMBED_WAV
+#include "default_wav.h"
+#endif
+
 typedef struct {
     Pixmap pixmap;      /* composed frame, canvas-sized */
     int delay_ms;       /* time to show this frame */
@@ -175,29 +186,57 @@ static Pixmap canvas_to_pixmap(Display *dpy, Window win, Visual *visual,
     return pm;
 }
 
+#if GIFSAVER_EMBED_GIF
+/* giflib read callback for decoding the embedded GIF from memory. */
+typedef struct {
+    const unsigned char *data;
+    unsigned long len, pos;
+} MemReader;
+
+static int mem_read(GifFileType *gf, GifByteType *out, int n)
+{
+    MemReader *mr = gf->UserData;
+    if ((unsigned long) n > mr->len - mr->pos)
+        n = (int) (mr->len - mr->pos);
+    memcpy(out, mr->data + mr->pos, (size_t) n);
+    mr->pos += (unsigned long) n;
+    return n;
+}
+#endif
+
 /*
- * Decode `filename` and return an array of composed, canvas-sized
- * frames as Pixmaps. Returns the frame count; fills *out_frames.
- * bg_override is an 0xRRGGBB backdrop for transparent areas, or -1
- * to pick one automatically.
+ * Decode `filename` (or the built-in GIF when filename is NULL) and
+ * return an array of composed, canvas-sized frames as Pixmaps.
+ * Returns the frame count; fills *out_frames. bg_override is an
+ * 0xRRGGBB backdrop for transparent areas, or -1 to pick one
+ * automatically.
  */
 static int load_gif_frames(const char *filename, Display *dpy, Window win,
                            Visual *visual, int depth, long bg_override,
                            Frame **out_frames)
 {
     int err = 0;
-    GifFileType *gif = DGifOpenFileName(filename, &err);
+    const char *label = filename ? filename : "built-in GIF";
+    GifFileType *gif = NULL;
     unsigned int *canvas, *prev, bg_color = 0;
     Frame *frames;
     int cw, ch, i, nframes;
+#if GIFSAVER_EMBED_GIF
+    MemReader mr = { gifsaver_default_gif, sizeof gifsaver_default_gif, 0 };
+
+    if (!filename)
+        gif = DGifOpen(&mr, mem_read, &err);
+#endif
+    if (filename)
+        gif = DGifOpenFileName(filename, &err);
 
     if (!gif) {
-        fprintf(stderr, "%s: cannot open %s: %s\n", progname, filename,
+        fprintf(stderr, "%s: cannot open %s: %s\n", progname, label,
                 GifErrorString(err));
         exit(1);
     }
     if (DGifSlurp(gif) != GIF_OK) {
-        fprintf(stderr, "%s: cannot decode %s: %s\n", progname, filename,
+        fprintf(stderr, "%s: cannot decode %s: %s\n", progname, label,
                 GifErrorString(gif->Error));
         exit(1);
     }
@@ -319,7 +358,7 @@ static int load_gif_frames(const char *filename, Display *dpy, Window win,
 
 typedef struct {
     snd_pcm_t *pcm;             /* NULL when audio is off */
-    unsigned char *data;        /* interleaved sample data */
+    const unsigned char *data;  /* interleaved sample data */
     snd_pcm_uframes_t total;    /* total frames in the WAV */
     snd_pcm_uframes_t pos;      /* next frame to hand to ALSA */
     snd_pcm_uframes_t buffer;   /* device buffer size in frames */
@@ -355,17 +394,17 @@ static unsigned int rd32(const unsigned char *p)
 #define WAVE_FORMAT_EXTENSIBLE 0xfffe
 
 /*
- * Parse a RIFF/WAVE file and open a non-blocking ALSA stream for it.
- * On any error the animation simply carries on without sound.
+ * Parse an in-memory RIFF/WAVE image (`label` names it in messages)
+ * and open a non-blocking ALSA stream for it. `buf` must stay alive
+ * for the lifetime of playback. On any error the animation simply
+ * carries on without sound (audio.pcm stays NULL).
  */
-static void audio_init(const char *path)
+static void audio_start(const unsigned char *buf, unsigned long nbytes,
+                        const char *label)
 {
-    FILE *f;
-    long filesize;
-    unsigned char *buf;
-    unsigned long pos, nbytes;
+    unsigned long pos;
     unsigned int wformat = 0, channels = 0, rate = 0, bits = 0;
-    unsigned char *data = NULL;
+    const unsigned char *data = NULL;
     unsigned long datalen = 0;
     unsigned int frame_bytes;
     snd_pcm_uframes_t total;
@@ -373,6 +412,105 @@ static void audio_init(const char *path)
     snd_pcm_t *pcm;
     const char *device;
     int err;
+
+    if (nbytes < 44 ||
+        memcmp(buf, "RIFF", 4) || memcmp(buf + 8, "WAVE", 4)) {
+        fprintf(stderr, "%s: %s: not a RIFF/WAVE file\n", progname, label);
+        return;
+    }
+
+    /* Walk the chunk list for "fmt " and "data". */
+    for (pos = 12; pos + 8 <= nbytes; ) {
+        unsigned long csize = rd32(buf + pos + 4);
+        const unsigned char *cdata = buf + pos + 8;
+        if (csize > nbytes - pos - 8)
+            csize = nbytes - pos - 8;
+        if (!memcmp(buf + pos, "fmt ", 4) && csize >= 16) {
+            wformat = rd16(cdata);
+            channels = rd16(cdata + 2);
+            rate = rd32(cdata + 4);
+            bits = rd16(cdata + 14);
+            /* WAVE_FORMAT_EXTENSIBLE: real format tag is in the GUID. */
+            if (wformat == WAVE_FORMAT_EXTENSIBLE && csize >= 26)
+                wformat = rd16(cdata + 24);
+        } else if (!memcmp(buf + pos, "data", 4)) {
+            data = cdata;
+            datalen = csize;
+        }
+        pos += 8 + csize + (csize & 1);
+    }
+
+    if (!data || !datalen || !channels || !rate) {
+        fprintf(stderr, "%s: %s: missing fmt/data chunk\n", progname,
+                label);
+        return;
+    }
+
+    if (wformat == WAVE_FORMAT_PCM && bits == 8)
+        format = SND_PCM_FORMAT_U8;
+    else if (wformat == WAVE_FORMAT_PCM && bits == 16)
+        format = SND_PCM_FORMAT_S16_LE;
+    else if (wformat == WAVE_FORMAT_PCM && bits == 24)
+        format = SND_PCM_FORMAT_S24_3LE;
+    else if (wformat == WAVE_FORMAT_PCM && bits == 32)
+        format = SND_PCM_FORMAT_S32_LE;
+    else if (wformat == WAVE_FORMAT_IEEE_FLOAT && bits == 32)
+        format = SND_PCM_FORMAT_FLOAT_LE;
+    else {
+        fprintf(stderr, "%s: %s: unsupported WAV format %u/%u-bit\n",
+                progname, label, wformat, bits);
+        return;
+    }
+
+    frame_bytes = channels * bits / 8;
+    total = datalen / frame_bytes;
+    if (!total) {
+        fprintf(stderr, "%s: %s: empty data chunk\n", progname, label);
+        return;
+    }
+
+    device = getenv("AUDIODEV");
+    if (!device || !*device)
+        device = "default";
+
+    err = snd_pcm_open(&pcm, device, SND_PCM_STREAM_PLAYBACK,
+                       SND_PCM_NONBLOCK);
+    if (err < 0) {
+        fprintf(stderr, "%s: cannot open audio device %s: %s\n",
+                progname, device, snd_strerror(err));
+        return;
+    }
+    err = snd_pcm_set_params(pcm, format, SND_PCM_ACCESS_RW_INTERLEAVED,
+                             channels, rate, 1 /* allow resampling */,
+                             500000 /* 0.5 s buffer */);
+    if (err < 0) {
+        fprintf(stderr, "%s: cannot configure audio device: %s\n",
+                progname, snd_strerror(err));
+        snd_pcm_close(pcm);
+        return;
+    }
+
+    audio.pcm = pcm;
+    audio.data = data;
+    audio.total = total;
+    audio.pos = 0;
+    audio.frame_bytes = frame_bytes;
+    {
+        snd_pcm_uframes_t bufsz = 0, period = 0;
+        if (snd_pcm_get_params(pcm, &bufsz, &period) < 0 || !bufsz)
+            bufsz = rate / 2;   /* ~the requested 0.5 s */
+        audio.buffer = bufsz;
+    }
+}
+
+/*
+ * Load a WAV file from disk and start looping it.
+ */
+static void audio_init(const char *path)
+{
+    FILE *f;
+    long filesize;
+    unsigned char *buf;
 
     f = fopen(path, "rb");
     if (!f) {
@@ -392,103 +530,14 @@ static void audio_init(const char *path)
     if (!buf || fread(buf, 1, (size_t) filesize, f) != (size_t) filesize) {
         fprintf(stderr, "%s: cannot read %s\n", progname, path);
         fclose(f);
+        free(buf);
         return;
     }
     fclose(f);
-    nbytes = (unsigned long) filesize;
 
-    if (memcmp(buf, "RIFF", 4) || memcmp(buf + 8, "WAVE", 4)) {
-        fprintf(stderr, "%s: %s: not a RIFF/WAVE file\n", progname, path);
+    audio_start(buf, (unsigned long) filesize, path);
+    if (!audio.pcm)
         free(buf);
-        return;
-    }
-
-    /* Walk the chunk list for "fmt " and "data". */
-    for (pos = 12; pos + 8 <= nbytes; ) {
-        unsigned long csize = rd32(buf + pos + 4);
-        unsigned char *cdata = buf + pos + 8;
-        if (csize > nbytes - pos - 8)
-            csize = nbytes - pos - 8;
-        if (!memcmp(buf + pos, "fmt ", 4) && csize >= 16) {
-            wformat = rd16(cdata);
-            channels = rd16(cdata + 2);
-            rate = rd32(cdata + 4);
-            bits = rd16(cdata + 14);
-            /* WAVE_FORMAT_EXTENSIBLE: real format tag is in the GUID. */
-            if (wformat == WAVE_FORMAT_EXTENSIBLE && csize >= 26)
-                wformat = rd16(cdata + 24);
-        } else if (!memcmp(buf + pos, "data", 4)) {
-            data = cdata;
-            datalen = csize;
-        }
-        pos += 8 + csize + (csize & 1);
-    }
-
-    if (!data || !datalen || !channels || !rate) {
-        fprintf(stderr, "%s: %s: missing fmt/data chunk\n", progname, path);
-        free(buf);
-        return;
-    }
-
-    if (wformat == WAVE_FORMAT_PCM && bits == 8)
-        format = SND_PCM_FORMAT_U8;
-    else if (wformat == WAVE_FORMAT_PCM && bits == 16)
-        format = SND_PCM_FORMAT_S16_LE;
-    else if (wformat == WAVE_FORMAT_PCM && bits == 24)
-        format = SND_PCM_FORMAT_S24_3LE;
-    else if (wformat == WAVE_FORMAT_PCM && bits == 32)
-        format = SND_PCM_FORMAT_S32_LE;
-    else if (wformat == WAVE_FORMAT_IEEE_FLOAT && bits == 32)
-        format = SND_PCM_FORMAT_FLOAT_LE;
-    else {
-        fprintf(stderr, "%s: %s: unsupported WAV format %u/%u-bit\n",
-                progname, path, wformat, bits);
-        free(buf);
-        return;
-    }
-
-    frame_bytes = channels * bits / 8;
-    total = datalen / frame_bytes;
-    if (!total) {
-        fprintf(stderr, "%s: %s: empty data chunk\n", progname, path);
-        free(buf);
-        return;
-    }
-
-    device = getenv("AUDIODEV");
-    if (!device || !*device)
-        device = "default";
-
-    err = snd_pcm_open(&pcm, device, SND_PCM_STREAM_PLAYBACK,
-                       SND_PCM_NONBLOCK);
-    if (err < 0) {
-        fprintf(stderr, "%s: cannot open audio device %s: %s\n",
-                progname, device, snd_strerror(err));
-        free(buf);
-        return;
-    }
-    err = snd_pcm_set_params(pcm, format, SND_PCM_ACCESS_RW_INTERLEAVED,
-                             channels, rate, 1 /* allow resampling */,
-                             500000 /* 0.5 s buffer */);
-    if (err < 0) {
-        fprintf(stderr, "%s: cannot configure audio device: %s\n",
-                progname, snd_strerror(err));
-        snd_pcm_close(pcm);
-        free(buf);
-        return;
-    }
-
-    audio.pcm = pcm;
-    audio.data = data;
-    audio.total = total;
-    audio.pos = 0;
-    audio.frame_bytes = frame_bytes;
-    {
-        snd_pcm_uframes_t bufsz = 0, period = 0;
-        if (snd_pcm_get_params(pcm, &bufsz, &period) < 0 || !bufsz)
-            bufsz = rate / 2;   /* ~the requested 0.5 s */
-        audio.buffer = bufsz;
-    }
 }
 
 /*
@@ -564,7 +613,11 @@ static void audio_pump(void)
 static void usage(void)
 {
     fprintf(stderr,
+#if GIFSAVER_EMBED_GIF
+        "usage: %s [options] [file.gif]   (default: built-in GIF)\n"
+#else
         "usage: %s [options] file.gif\n"
+#endif
         "  -root              draw on the root window\n"
         "  -window-id 0xNNN   draw on an existing window (xscreensaver)\n"
         "  -window            open a test window (default)\n"
@@ -625,8 +678,10 @@ int main(int argc, char **argv)
         env = getenv("GIFSAVER_GIF");
         if (env && *env)
             gif_file = env;
+#if !GIFSAVER_EMBED_GIF
         else
-            usage();
+            usage();    /* with no embedded GIF, a file is mandatory */
+#endif
     }
 
     dpy = XOpenDisplay(display_name);
@@ -686,6 +741,11 @@ int main(int argc, char **argv)
 
     if (wav_file)
         audio_init(wav_file);
+#if GIFSAVER_EMBED_WAV
+    else
+        audio_start(gifsaver_default_wav, sizeof gifsaver_default_wav,
+                    "built-in WAV");
+#endif
 
     XSelectInput(dpy, win, ExposureMask | StructureNotifyMask);
 
