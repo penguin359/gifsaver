@@ -28,6 +28,25 @@ Container") and all build dependencies, headless-test tools (`Xvfb`,
 `xdpyinfo`) and recommended extensions are set up automatically; the
 project is built once the container is created.
 
+### Static binary (portable, musl-linked)
+
+[build-static.sh](./build-static.sh) builds a fully static executable
+in an Alpine Linux container — no glibc or shared-library dependencies,
+so the resulting `gifsaver-static` can be copied to any x86-64 Linux
+machine and run as-is:
+
+```sh
+./build-static.sh                 # needs Docker; writes ./gifsaver-static
+```
+
+Audio is always disabled in static builds (ALSA's plugin system needs
+`dlopen()`, which static executables cannot do); `-sound` is accepted
+but ignored with a notice. Combine with `GIFSAVER_EMBED_GIF` in
+[config.h](./config.h) for a single self-contained screensaver binary
+with the animation baked in. The script pins and statically builds
+libXau from source, since Alpine does not package it as a static
+library.
+
 ## Trying it out, Failing Fast!
 
 Run it standalone in a test window:

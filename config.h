@@ -2,7 +2,9 @@
  * config.h - compile-time feature configuration for gifsaver.
  *
  * Each feature is a macro set to 1 (enabled) or 0 (disabled).
- * Commenting a define out also disables the feature.
+ * Every setting here is a default: it can be overridden from the
+ * compiler command line with -DGIFSAVER_...=0/1 (used e.g. by
+ * build-static.sh to force audio off).
  */
 
 #ifndef GIFSAVER_CONFIG_H
@@ -11,10 +13,12 @@
 /*
  * Audio support: loop a WAV file (-sound file.wav) through ALSA while
  * the animation plays. Requires libasound (libasound2-dev) at build
- * time. Set to 0 or comment out to build without the ALSA dependency;
- * the Makefile picks up the change automatically.
+ * time. Set to 0 to build without the ALSA dependency; the Makefile
+ * picks up the change automatically.
  */
+#ifndef GIFSAVER_AUDIO
 #define GIFSAVER_AUDIO 1
+#endif
 
 /*
  * Embedded default media: compile a GIF and/or WAV directly into the
@@ -29,7 +33,12 @@
  * GIFSAVER_EMBED_WAV enabled (requires GIFSAVER_AUDIO), the built-in
  * WAV plays whenever no -sound option is given.
  */
+#ifndef GIFSAVER_EMBED_GIF
 #define GIFSAVER_EMBED_GIF 0
+#endif
+
+#ifndef GIFSAVER_EMBED_WAV
 #define GIFSAVER_EMBED_WAV 0
+#endif
 
 #endif /* GIFSAVER_CONFIG_H */
