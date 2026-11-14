@@ -58,11 +58,12 @@ different backdrop, e.g. `-background black` or `-background '#336699'`.
 ```
 
 The WAV file (PCM 8/16/24/32-bit or 32-bit float, any rate/channels) is
-looped through ALSA in a background process for as long as the
-screensaver runs, and stops the moment it exits. Set the `AUDIODEV`
-environment variable to pick a specific ALSA device (default:
-`default`). Audio problems (missing device, unsupported file) are
-reported but never stop the animation.
+looped through ALSA for as long as the screensaver runs — fed
+non-blockingly from the same event loop that drives the animation, so
+everything stays in a single process. Set the `AUDIODEV` environment
+variable to pick a specific ALSA device (default: `default`). Audio
+problems (missing device, unsupported file) are reported but never stop
+the animation.
 
 ## Installing into xscreensaver
 

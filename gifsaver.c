@@ -18,11 +18,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
-#include <signal.h>
-#include <unistd.h>
 #include <sys/select.h>
 #include <sys/time.h>
-#include <sys/prctl.h>
 
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
@@ -308,23 +305,30 @@ static int load_gif_frames(const char *filename, Display *dpy, Window win,
 }
 
 /* ------------------------------------------------------------------ */
-/* Background WAV playback through ALSA, looped in a child process.   */
+/* Looping WAV playback through ALSA, fed non-blockingly from the     */
+/* main event loop — no extra process or thread.                      */
 /* ------------------------------------------------------------------ */
 
-static pid_t audio_pid = -1;
+typedef struct {
+    snd_pcm_t *pcm;             /* NULL when audio is off */
+    unsigned char *data;        /* interleaved sample data */
+    snd_pcm_uframes_t total;    /* total frames in the WAV */
+    snd_pcm_uframes_t pos;      /* next frame to hand to ALSA */
+    snd_pcm_uframes_t buffer;   /* device buffer size in frames */
+    unsigned int frame_bytes;
+} AudioState;
 
-static void kill_audio(void)
-{
-    if (audio_pid > 0)
-        kill(audio_pid, SIGTERM);
-}
+static AudioState audio;
 
-static void on_fatal_signal(int sig)
+static void audio_stop(const char *why)
 {
-    (void) sig;
-    if (audio_pid > 0)
-        kill(audio_pid, SIGTERM);
-    _exit(0);
+    if (why)
+        fprintf(stderr, "%s: %s, continuing without sound\n",
+                progname, why);
+    if (audio.pcm) {
+        snd_pcm_close(audio.pcm);
+        audio.pcm = NULL;
+    }
 }
 
 static unsigned int rd16(const unsigned char *p)
@@ -343,18 +347,17 @@ static unsigned int rd32(const unsigned char *p)
 #define WAVE_FORMAT_EXTENSIBLE 0xfffe
 
 /*
- * Parse a RIFF/WAVE file and play its data chunk through ALSA in an
- * endless loop. Runs in the audio child process; returns on error
- * (the animation carries on without sound).
+ * Parse a RIFF/WAVE file and open a non-blocking ALSA stream for it.
+ * On any error the animation simply carries on without sound.
  */
-static void play_wav_forever(const char *path)
+static void audio_init(const char *path)
 {
     FILE *f;
     long filesize;
     unsigned char *buf;
     unsigned long pos, nbytes;
     unsigned int wformat = 0, channels = 0, rate = 0, bits = 0;
-    const unsigned char *data = NULL;
+    unsigned char *data = NULL;
     unsigned long datalen = 0;
     unsigned int frame_bytes;
     snd_pcm_uframes_t total;
@@ -388,13 +391,14 @@ static void play_wav_forever(const char *path)
 
     if (memcmp(buf, "RIFF", 4) || memcmp(buf + 8, "WAVE", 4)) {
         fprintf(stderr, "%s: %s: not a RIFF/WAVE file\n", progname, path);
+        free(buf);
         return;
     }
 
     /* Walk the chunk list for "fmt " and "data". */
     for (pos = 12; pos + 8 <= nbytes; ) {
         unsigned long csize = rd32(buf + pos + 4);
-        const unsigned char *cdata = buf + pos + 8;
+        unsigned char *cdata = buf + pos + 8;
         if (csize > nbytes - pos - 8)
             csize = nbytes - pos - 8;
         if (!memcmp(buf + pos, "fmt ", 4) && csize >= 16) {
@@ -414,6 +418,7 @@ static void play_wav_forever(const char *path)
 
     if (!data || !datalen || !channels || !rate) {
         fprintf(stderr, "%s: %s: missing fmt/data chunk\n", progname, path);
+        free(buf);
         return;
     }
 
@@ -430,6 +435,7 @@ static void play_wav_forever(const char *path)
     else {
         fprintf(stderr, "%s: %s: unsupported WAV format %u/%u-bit\n",
                 progname, path, wformat, bits);
+        free(buf);
         return;
     }
 
@@ -437,6 +443,7 @@ static void play_wav_forever(const char *path)
     total = datalen / frame_bytes;
     if (!total) {
         fprintf(stderr, "%s: %s: empty data chunk\n", progname, path);
+        free(buf);
         return;
     }
 
@@ -444,74 +451,86 @@ static void play_wav_forever(const char *path)
     if (!device || !*device)
         device = "default";
 
-    err = snd_pcm_open(&pcm, device, SND_PCM_STREAM_PLAYBACK, 0);
+    err = snd_pcm_open(&pcm, device, SND_PCM_STREAM_PLAYBACK,
+                       SND_PCM_NONBLOCK);
     if (err < 0) {
         fprintf(stderr, "%s: cannot open audio device %s: %s\n",
                 progname, device, snd_strerror(err));
+        free(buf);
         return;
     }
     err = snd_pcm_set_params(pcm, format, SND_PCM_ACCESS_RW_INTERLEAVED,
                              channels, rate, 1 /* allow resampling */,
-                             500000 /* 0.5 s latency */);
+                             500000 /* 0.5 s buffer */);
     if (err < 0) {
         fprintf(stderr, "%s: cannot configure audio device: %s\n",
                 progname, snd_strerror(err));
         snd_pcm_close(pcm);
+        free(buf);
         return;
     }
 
-    for (;;) {
-        snd_pcm_uframes_t done = 0;
-        while (done < total) {
-            snd_pcm_uframes_t chunk = total - done;
-            snd_pcm_sframes_t n;
-            if (chunk > 4096)
-                chunk = 4096;
-            n = snd_pcm_writei(pcm, data + (size_t) done * frame_bytes,
-                               chunk);
-            if (n < 0)
-                n = snd_pcm_recover(pcm, (int) n, 1);
-            if (n < 0) {
-                fprintf(stderr, "%s: audio write failed: %s\n",
-                        progname, snd_strerror((int) n));
-                snd_pcm_close(pcm);
-                return;
-            }
-            done += (snd_pcm_uframes_t) n;
-        }
+    audio.pcm = pcm;
+    audio.data = data;
+    audio.total = total;
+    audio.pos = 0;
+    audio.frame_bytes = frame_bytes;
+    {
+        snd_pcm_uframes_t bufsz = 0, period = 0;
+        if (snd_pcm_get_params(pcm, &bufsz, &period) < 0 || !bufsz)
+            bufsz = rate / 2;   /* ~the requested 0.5 s */
+        audio.buffer = bufsz;
     }
 }
 
 /*
- * Fork a child that loops the WAV forever. The child exits with the
- * parent (PDEATHSIG), and the parent kills it on exit or signal.
+ * Top up the ALSA buffer with as many frames as it will take right
+ * now, wrapping around the WAV data for a seamless loop. Called from
+ * the main event loop; never blocks.
  */
-static void start_audio(const char *wav_file)
+static void audio_pump(void)
 {
-    struct sigaction sa;
+    snd_pcm_uframes_t budget = audio.buffer;   /* bound work per call */
 
-    audio_pid = fork();
-    if (audio_pid < 0) {
-        fprintf(stderr, "%s: fork failed, continuing without sound\n",
-                progname);
-        return;
-    }
-    if (audio_pid == 0) {
-        prctl(PR_SET_PDEATHSIG, SIGTERM);
-        if (getppid() == 1)     /* parent already gone */
-            _exit(0);
-        play_wav_forever(wav_file);
-        _exit(0);
-    }
+    while (audio.pcm && budget > 0) {
+        snd_pcm_uframes_t chunk;
+        snd_pcm_sframes_t n, avail;
 
-    /* Parent: make every exit path take the child down with us. */
-    atexit(kill_audio);
-    memset(&sa, 0, sizeof sa);
-    sa.sa_handler = on_fatal_signal;
-    sigaction(SIGTERM, &sa, NULL);
-    sigaction(SIGINT, &sa, NULL);
-    sigaction(SIGHUP, &sa, NULL);
-    signal(SIGCHLD, SIG_IGN);   /* don't leave a zombie if audio dies */
+        avail = snd_pcm_avail_update(audio.pcm);
+        if (avail < 0) {
+            if (snd_pcm_recover(audio.pcm, (int) avail, 1) < 0) {
+                audio_stop("audio device lost");
+                return;
+            }
+            continue;
+        }
+        if (avail == 0)
+            return;
+
+        chunk = (snd_pcm_uframes_t) avail;
+        if (chunk > budget)
+            chunk = budget;
+        if (chunk > audio.total - audio.pos)
+            chunk = audio.total - audio.pos;
+
+        n = snd_pcm_writei(audio.pcm,
+                           audio.data + (size_t) audio.pos *
+                                        audio.frame_bytes,
+                           chunk);
+        if (n == -EAGAIN || n == 0)
+            return;
+        if (n < 0) {
+            if (snd_pcm_recover(audio.pcm, (int) n, 1) < 0) {
+                audio_stop("audio write failed");
+                return;
+            }
+            continue;
+        }
+        audio.pos += (snd_pcm_uframes_t) n;
+        budget -= (snd_pcm_uframes_t) n;
+        if (audio.pos == audio.total)
+            audio.pos = 0;
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -638,13 +657,12 @@ int main(int argc, char **argv)
     XSetFillStyle(dpy, gc, FillTiled);
 
     if (wav_file)
-        start_audio(wav_file);
+        audio_init(wav_file);
 
     XSelectInput(dpy, win, ExposureMask | StructureNotifyMask);
 
     for (;;) {
-        struct timeval tv;
-        fd_set fds;
+        struct timeval deadline, now;
         int xfd = ConnectionNumber(dpy);
 
         XSetTile(dpy, gc, frames[cur].pixmap);
@@ -652,10 +670,24 @@ int main(int argc, char **argv)
                        (unsigned) xgwa.width, (unsigned) xgwa.height);
         XFlush(dpy);
 
-        /* Wait out the frame delay while staying responsive to events. */
-        tv.tv_sec = frames[cur].delay_ms / 1000;
-        tv.tv_usec = (frames[cur].delay_ms % 1000) * 1000;
+        gettimeofday(&deadline, NULL);
+        deadline.tv_sec += frames[cur].delay_ms / 1000;
+        deadline.tv_usec += (frames[cur].delay_ms % 1000) * 1000;
+        if (deadline.tv_usec >= 1000000) {
+            deadline.tv_sec++;
+            deadline.tv_usec -= 1000000;
+        }
+
+        /*
+         * Wait out the frame delay while keeping the ALSA buffer full
+         * and staying responsive to events. With a 0.5 s audio buffer,
+         * topping it up at least every 100 ms is comfortable.
+         */
         for (;;) {
+            struct timeval tv;
+            long remaining_ms;
+            fd_set fds;
+
             while (XPending(dpy)) {
                 XEvent ev;
                 XNextEvent(dpy, &ev);
@@ -672,19 +704,31 @@ int main(int argc, char **argv)
                     exit(0);
                 }
             }
-            if (nframes == 1) {
-                /* Static image: just block on events. */
+
+            audio_pump();
+
+            gettimeofday(&now, NULL);
+            remaining_ms = (deadline.tv_sec - now.tv_sec) * 1000 +
+                           (deadline.tv_usec - now.tv_usec) / 1000;
+            if (nframes > 1 && remaining_ms <= 0)
+                break;          /* time for the next frame */
+
+            if (nframes == 1 && !audio.pcm) {
+                /* Static image, no sound: just block on events. */
                 XEvent ev;
                 XNextEvent(dpy, &ev);
                 XPutBackEvent(dpy, &ev);
                 continue;
             }
-            if (tv.tv_sec == 0 && tv.tv_usec == 0)
-                break;
+
+            if (nframes == 1 || (audio.pcm && remaining_ms > 100))
+                remaining_ms = 100;     /* wake up to refill audio */
+            tv.tv_sec = remaining_ms / 1000;
+            tv.tv_usec = (remaining_ms % 1000) * 1000;
+
             FD_ZERO(&fds);
             FD_SET(xfd, &fds);
-            if (select(xfd + 1, &fds, NULL, NULL, &tv) == 0)
-                break;     /* delay elapsed */
+            select(xfd + 1, &fds, NULL, NULL, &tv);
         }
         cur = (cur + 1) % nframes;
     }
