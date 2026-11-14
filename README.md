@@ -57,16 +57,20 @@ builds that bypass the Makefile.
 Needs Visual Studio with the C++ workload and
 [vcpkg](https://github.com/microsoft/vcpkg) with `VCPKG_ROOT` set.
 giflib is declared (Windows-only) in [vcpkg.json](./vcpkg.json) and
-linked statically:
+linked statically. From PowerShell:
 
-```bat
-build-win32.cmd                   :: writes gifsaver.scr
-gifsaver.scr /s C:\path\to\animation.gif
+```powershell
+.\build-win32.cmd                 # writes gifsaver.scr
+$env:GIFSAVER_GIF = "C:\path\to\animation.gif"
+.\gifsaver.scr                    # runs full screen
 ```
 
-When Windows starts the screensaver it only passes `/s`, so set the
-`GIFSAVER_GIF` environment variable to the GIF's path, or embed one by
-building with `build-win32.cmd /DGIFSAVER_EMBED_GIF=1`. Install by
+`.scr` is not an executable extension to the shell, so `.\gifsaver.scr`
+goes through the file association (`"%1" /S`), which drops any further
+arguments; pass the GIF through `GIFSAVER_GIF` instead. Windows itself
+also only passes `/s` when starting the screensaver, so set
+`GIFSAVER_GIF` permanently (e.g. in `sysdm.cpl`), or embed a GIF by
+building with `.\build-win32.cmd /DGIFSAVER_EMBED_GIF=1`. Install by
 right-clicking `gifsaver.scr` and choosing *Install*. Preview, settings
 and sound are not supported on Windows yet.
 
