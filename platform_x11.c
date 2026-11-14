@@ -350,9 +350,9 @@ static void audio_pump(void)
 
 /* ------------------------------------------------------------------ */
 
-static void usage(void)
+static void print_usage(FILE *out)
 {
-    fprintf(stderr,
+    fprintf(out,
 #if GIFSAVER_EMBED_GIF
         "usage: %s [options] [file.gif]   (default: built-in GIF)\n"
 #else
@@ -367,7 +367,14 @@ static void usage(void)
 #if GIFSAVER_AUDIO
         "  -sound file.wav    loop a WAV file while animating\n"
 #endif
+        "  -help              show this help and exit\n"
+        "  -version           show the version and exit\n"
         , progname);
+}
+
+static void usage(void)
+{
+    print_usage(stderr);
     exit(1);
 }
 
@@ -392,7 +399,15 @@ int main(int argc, char **argv)
     int i, r;
 
     for (i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "-root")) {
+        if (!strcmp(argv[i], "-help") || !strcmp(argv[i], "--help") ||
+            !strcmp(argv[i], "-h")) {
+            print_usage(stdout);
+            exit(0);
+        } else if (!strcmp(argv[i], "-version") ||
+                   !strcmp(argv[i], "--version")) {
+            printf("%s %s\n", progname, GIFSAVER_VERSION);
+            exit(0);
+        } else if (!strcmp(argv[i], "-root")) {
             use_root = 1;
         } else if (!strcmp(argv[i], "-window")) {
             use_root = 0;

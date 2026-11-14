@@ -88,6 +88,8 @@ Or paint the whole root window:
 | `-delay ms` | Override all frame delays with a fixed value |
 | `-background color` | Backdrop for transparent areas (X color name or `#rrggbb`) |
 | `-sound file.wav` | Loop a WAV file in the background while animating |
+| `-help` | Show usage and exit |
+| `-version` | Show the version and exit |
 | `-display dpy` | X display to connect to |
 
 The GIF file may also be given via the `GIFSAVER_GIF` environment

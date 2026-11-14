@@ -14,6 +14,8 @@
 #ifndef GIFSAVER_H
 #define GIFSAVER_H
 
+#define GIFSAVER_VERSION "1.0"
+
 /* Defined by the platform layer; used in diagnostics. */
 extern const char *progname;
 
