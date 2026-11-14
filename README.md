@@ -81,6 +81,27 @@ The WAV loops through the default output device (waveOut). See
 screensaver. The small preview in Screen Saver Settings is not
 supported on Windows yet.
 
+### Debugging in VS Code
+
+[.vscode](./.vscode) has build tasks and launch configurations for both
+platforms (needs the C/C++ extension). *Ctrl+Shift+B* runs the default
+**build (debug)** task: `make -B CFLAGS="-g -O0 ..."` on Linux, or
+`build-win32.cmd` with `DEBUG=1` (unoptimized, `/MTd`, `gifsaver.pdb`)
+on Windows. Press *F5* and pick a configuration:
+
+| Configuration | Runs |
+| --- | --- |
+| Windows: test window | `gifsaver.scr -window file.gif` |
+| Windows: full screen | `gifsaver.scr /s file.gif` |
+| Windows: settings dialog | `gifsaver.scr /c` |
+| Linux: test window | `gifsaver -window file.gif` |
+
+You are prompted for the GIF (default `image.gif`). Prefer the test
+window: like X11's `-window`, `-window` on Windows opens an ordinary
+resizable window that ignores input and focus changes, whereas the full
+screen saver covers the editor and quits as soon as a breakpoint takes
+focus away.
+
 ### Dev container / Codespaces
 
 A [dev container configuration](./.devcontainer/devcontainer.json) is

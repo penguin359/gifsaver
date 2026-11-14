@@ -21,3 +21,5 @@
 /vcpkg_installed/
 *.obj
 *.res
+*.pdb
+*.ilk

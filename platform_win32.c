@@ -9,6 +9,7 @@
  * standard screensaver command line:
  *
  *   gifsaver.scr /s [-sound file.wav] [file.gif]   run full screen
+ *   gifsaver.scr -window [-sound file.wav] [file.gif]   test window
  *   gifsaver.scr /p <hwnd>        preview (not supported yet)
  *   gifsaver.scr [/c[:<hwnd>]]    settings dialog
  *
@@ -68,6 +69,7 @@ static struct {
     int *delays;        /* per-frame delay in ms */
     int nframes, cur;
     POINT mouse;        /* cursor position at startup */
+    int windowed;       /* -window: ordinary test window, input ignored */
 } saver;
 
 static void die(const char *msg)
@@ -358,11 +360,15 @@ static LRESULT CALLBACK saver_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 #endif
 
     case WM_SETCURSOR:
+        if (saver.windowed)
+            break;
         SetCursor(NULL);
         return TRUE;
 
     case WM_MOUSEMOVE: {
         POINT pt;
+        if (saver.windowed)
+            break;
         GetCursorPos(&pt);
         if (abs(pt.x - saver.mouse.x) > MOUSE_SLOP ||
             abs(pt.y - saver.mouse.y) > MOUSE_SLOP)
@@ -376,11 +382,13 @@ static LRESULT CALLBACK saver_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_MBUTTONDOWN:
     case WM_XBUTTONDOWN:
     case WM_MOUSEWHEEL:
+        if (saver.windowed)
+            break;
         PostMessage(hwnd, WM_CLOSE, 0, 0);
         return 0;
 
     case WM_ACTIVATEAPP:
-        if (!wp)
+        if (!wp && !saver.windowed)
             PostMessage(hwnd, WM_CLOSE, 0, 0);
         break;
 
@@ -396,7 +404,7 @@ static LRESULT CALLBACK saver_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     return DefWindowProcA(hwnd, msg, wp, lp);
 }
 
-static void run_fullscreen(const char *wav_file)
+static void run_saver(const char *wav_file)
 {
     HINSTANCE hinst = GetModuleHandleA(NULL);
     WNDCLASSA wc;
@@ -406,18 +414,25 @@ static void run_fullscreen(const char *wav_file)
     memset(&wc, 0, sizeof wc);
     wc.lpfnWndProc = saver_proc;
     wc.hInstance = hinst;
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.lpszClassName = "gifsaver";
     if (!RegisterClassA(&wc))
         die("RegisterClass failed");
 
     GetCursorPos(&saver.mouse);
-    hwnd = CreateWindowExA(WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-                           "gifsaver", "gifsaver", WS_POPUP | WS_VISIBLE,
-                           GetSystemMetrics(SM_XVIRTUALSCREEN),
-                           GetSystemMetrics(SM_YVIRTUALSCREEN),
-                           GetSystemMetrics(SM_CXVIRTUALSCREEN),
-                           GetSystemMetrics(SM_CYVIRTUALSCREEN),
-                           NULL, NULL, hinst, NULL);
+    if (saver.windowed)
+        hwnd = CreateWindowExA(0, "gifsaver", "gifsaver",
+                               WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                               CW_USEDEFAULT, CW_USEDEFAULT, 800, 600,
+                               NULL, NULL, hinst, NULL);
+    else
+        hwnd = CreateWindowExA(WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+                               "gifsaver", "gifsaver", WS_POPUP | WS_VISIBLE,
+                               GetSystemMetrics(SM_XVIRTUALSCREEN),
+                               GetSystemMetrics(SM_YVIRTUALSCREEN),
+                               GetSystemMetrics(SM_CXVIRTUALSCREEN),
+                               GetSystemMetrics(SM_CYVIRTUALSCREEN),
+                               NULL, NULL, hinst, NULL);
     if (!hwnd)
         die("cannot create screensaver window");
     SetForegroundWindow(hwnd);
@@ -455,6 +470,9 @@ int main(int argc, char **argv)
         const char *a = argv[i];
         if (!strcmp(a, "-sound") && i + 1 < argc) {
             wav_file = argv[++i];
+        } else if (!strcmp(a, "-window")) {
+            saver.windowed = 1;
+            mode = 's';
         } else if ((a[0] == '/' || a[0] == '-') && a[1] &&
             (a[2] == '\0' || a[2] == ':')) {
             mode = (char) tolower((unsigned char) a[1]);
@@ -508,6 +526,6 @@ int main(int argc, char **argv)
     upload_frames(&anim);
     anim_free(&anim);           /* pixel data lives in GDI bitmaps now */
 
-    run_fullscreen(wav_file);
+    run_saver(wav_file);
     return 0;
 }

@@ -1,0 +1,36 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "build (debug)",
+            "type": "shell",
+            "group": { "kind": "build", "isDefault": true },
+            "linux": {
+                "command": "make",
+                "args": ["-B", "CFLAGS=-g -O0 -Wall -Wextra"],
+                "problemMatcher": "$gcc"
+            },
+            "windows": {
+                "command": "cmd",
+                "args": ["/c", "build-win32.cmd"],
+                "options": { "env": { "DEBUG": "1" } },
+                "problemMatcher": "$msCompile"
+            }
+        },
+        {
+            "label": "build (release)",
+            "type": "shell",
+            "group": "build",
+            "linux": {
+                "command": "make",
+                "args": ["-B"],
+                "problemMatcher": "$gcc"
+            },
+            "windows": {
+                "command": "cmd",
+                "args": ["/c", "build-win32.cmd"],
+                "problemMatcher": "$msCompile"
+            }
+        }
+    ]
+}
