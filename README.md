@@ -27,10 +27,10 @@ one new platform file:
 | [anim.c](./anim.c) | Portable: GIF → RGB frame buffers (giflib only) |
 | [wav.c](./wav.c) | Portable: RIFF/WAVE → described sample buffer |
 | [platform_x11.c](./platform_x11.c) | Linux/X11: `main()`, xscreensaver conventions, windowing, tiled drawing, event/timing loop, ALSA output |
+| [platform_win32.c](./platform_win32.c) | Windows: `main()`, `.scr` command line, full-screen tiled drawing, timer loop (no audio yet) |
 
-The platform layer is selected with `make PLATFORM=x11` (the default);
-a future Windows port would add `platform_win32.c` and build with
-`PLATFORM=win32`.
+The Makefile builds the X11 layer (`make PLATFORM=x11`, the default);
+Windows uses [build-win32.cmd](./build-win32.cmd) instead.
 
 Compile-time features are configured through Makefile variables, set
 on the command line or persistently in an optional `config.mk` (which
@@ -51,6 +51,24 @@ The Makefile injects these as `-D` flags and tracks them in a stamp
 file, so changing a feature automatically rebuilds the affected
 objects. [config.h](./config.h) only holds fallback defaults for
 builds that bypass the Makefile.
+
+### Windows screensaver (.scr)
+
+Needs Visual Studio with the C++ workload and
+[vcpkg](https://github.com/microsoft/vcpkg) with `VCPKG_ROOT` set.
+giflib is declared (Windows-only) in [vcpkg.json](./vcpkg.json) and
+linked statically:
+
+```bat
+build-win32.cmd                   :: writes gifsaver.scr
+gifsaver.scr /s C:\path\to\animation.gif
+```
+
+When Windows starts the screensaver it only passes `/s`, so set the
+`GIFSAVER_GIF` environment variable to the GIF's path, or embed one by
+building with `build-win32.cmd /DGIFSAVER_EMBED_GIF=1`. Install by
+right-clicking `gifsaver.scr` and choosing *Install*. Preview, settings
+and sound are not supported on Windows yet.
 
 ### Dev container / Codespaces
 

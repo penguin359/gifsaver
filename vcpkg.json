@@ -1,0 +1,11 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "gifsaver",
+  "builtin-baseline": "4702e381dbbd9b54d3f7e1eb565cd8981c1814cd",
+  "dependencies": [
+    {
+      "name": "giflib",
+      "platform": "windows"
+    }
+  ]
+}
