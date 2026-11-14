@@ -27,7 +27,7 @@ one new platform file:
 | [anim.c](./anim.c) | Portable: GIF → RGB frame buffers (giflib only) |
 | [wav.c](./wav.c) | Portable: RIFF/WAVE → described sample buffer |
 | [platform_x11.c](./platform_x11.c) | Linux/X11: `main()`, xscreensaver conventions, windowing, tiled drawing, event/timing loop, ALSA output |
-| [platform_win32.c](./platform_win32.c) | Windows: `main()`, `.scr` command line, full-screen tiled drawing, timer loop (no audio yet) |
+| [platform_win32.c](./platform_win32.c) | Windows: `main()`, `.scr` command line, full-screen tiled drawing, timer loop, waveOut output |
 
 The Makefile builds the X11 layer (`make PLATFORM=x11`, the default);
 Windows uses [build-win32.cmd](./build-win32.cmd) instead.
@@ -62,17 +62,20 @@ linked statically. From PowerShell:
 ```powershell
 .\build-win32.cmd                 # writes gifsaver.scr
 $env:GIFSAVER_GIF = "C:\path\to\animation.gif"
+$env:GIFSAVER_SOUND = "C:\path\to\music.wav"   # optional
 .\gifsaver.scr                    # runs full screen
 ```
 
 `.scr` is not an executable extension to the shell, so `.\gifsaver.scr`
 goes through the file association (`"%1" /S`), which drops any further
-arguments; pass the GIF through `GIFSAVER_GIF` instead. Windows itself
-also only passes `/s` when starting the screensaver, so set
-`GIFSAVER_GIF` permanently (e.g. in `sysdm.cpl`), or embed a GIF by
-building with `.\build-win32.cmd /DGIFSAVER_EMBED_GIF=1`. Install by
-right-clicking `gifsaver.scr` and choosing *Install*. Preview, settings
-and sound are not supported on Windows yet.
+arguments; pass the files through `GIFSAVER_GIF` and `GIFSAVER_SOUND`
+instead. Windows itself also only passes `/s` when starting the
+screensaver, so set them permanently (e.g. in `sysdm.cpl`), or embed
+the media by building with e.g.
+`.\build-win32.cmd /DGIFSAVER_EMBED_GIF=1 /DGIFSAVER_EMBED_WAV=1`.
+The WAV loops through the default output device (waveOut). Install by
+right-clicking `gifsaver.scr` and choosing *Install*. Preview and
+settings are not supported on Windows yet.
 
 ### Dev container / Codespaces
 

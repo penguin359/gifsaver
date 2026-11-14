@@ -22,10 +22,9 @@ if not defined VCPKG_ROOT goto no_vcpkg
 "%VCPKG_ROOT%\vcpkg.exe" install --triplet %TRIPLET% || goto fail
 set "DEPS=%CD%\vcpkg_installed\%TRIPLET%"
 
-rem Audio has no Windows backend yet.
-cl /nologo /O2 /W3 /MT /D_CRT_SECURE_NO_WARNINGS /DGIFSAVER_AUDIO=0 ^
-   /I"%DEPS%\include" %* anim.c platform_win32.c /Fe:gifsaver.scr ^
-   /link /LIBPATH:"%DEPS%\lib" gif.lib user32.lib gdi32.lib ^
+cl /nologo /O2 /W3 /MT /D_CRT_SECURE_NO_WARNINGS ^
+   /I"%DEPS%\include" %* anim.c wav.c platform_win32.c /Fe:gifsaver.scr ^
+   /link /LIBPATH:"%DEPS%\lib" gif.lib user32.lib gdi32.lib winmm.lib ^
    /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup || goto fail
 exit /b 0
 

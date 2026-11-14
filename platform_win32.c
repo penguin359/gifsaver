@@ -5,16 +5,20 @@
  * SPDX-License-Identifier: MIT
  *
  * A Windows screensaver (.scr) that tiles the decoded animation across
- * all monitors. Follows the standard screensaver command line:
+ * all monitors, optionally looping a WAV through waveOut. Follows the
+ * standard screensaver command line:
  *
- *   gifsaver.scr /s [file.gif]    run full screen
+ *   gifsaver.scr /s [-sound file.wav] [file.gif]   run full screen
  *   gifsaver.scr /p <hwnd>        preview (not supported yet)
  *   gifsaver.scr [/c[:<hwnd>]]    settings (not supported yet)
  *
  * The GIF is taken from the command line, else the GIFSAVER_GIF
  * environment variable, else (with GIFSAVER_EMBED_GIF) the built-in GIF.
+ * Likewise the WAV comes from -sound, else GIFSAVER_SOUND, else (with
+ * GIFSAVER_EMBED_WAV) the built-in WAV.
  *
  * Requires: giflib (>= 5.0), provided by vcpkg; see vcpkg.json.
+ * Optional: winmm for -sound; see config.h.
  */
 
 #include "config.h"
@@ -27,6 +31,15 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+
+#if GIFSAVER_AUDIO
+#include <mmsystem.h>
+#include <mmreg.h>
+#endif
+
+#if GIFSAVER_EMBED_WAV && !GIFSAVER_AUDIO
+#error "GIFSAVER_EMBED_WAV requires GIFSAVER_AUDIO (see config.h)"
+#endif
 
 const char *progname = "gifsaver";
 
@@ -91,6 +104,105 @@ static void upload_frames(const Animation *anim)
     ReleaseDC(NULL, hdc);
 }
 
+/* ------------------------------------------------------------------ */
+/* Looping WAV playback through waveOut. Completed buffers come back  */
+/* to the screensaver window as MM_WOM_DONE and are queued again.     */
+/* ------------------------------------------------------------------ */
+
+#if GIFSAVER_AUDIO
+
+static const GUID subtype_pcm = { 0x00000001, 0x0000, 0x0010,
+    { 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71 } };
+static const GUID subtype_float = { 0x00000003, 0x0000, 0x0010,
+    { 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71 } };
+
+static struct {
+    HWAVEOUT wo;        /* NULL when audio is off */
+    WavClip clip;
+    WAVEHDR hdr[2];     /* both span the whole clip; one is always queued */
+} audio;
+
+static void audio_stop(const char *why)
+{
+    int i;
+
+    fprintf(stderr, "%s: %s, continuing without sound\n", progname, why);
+    if (audio.wo) {
+        HWAVEOUT wo = audio.wo;
+        audio.wo = NULL;
+        waveOutReset(wo);
+        for (i = 0; i < 2; i++)
+            waveOutUnprepareHeader(wo, &audio.hdr[i], sizeof audio.hdr[i]);
+        waveOutClose(wo);
+    }
+    wav_free(&audio.clip);
+}
+
+/* Load the requested (or built-in) clip and start looping it. */
+static void audio_setup(HWND hwnd, const char *wav_file)
+{
+    WAVEFORMATEXTENSIBLE wfx;
+    const WavClip *clip = &audio.clip;
+    unsigned int bits;
+    int have = 0, i;
+
+    if (wav_file)
+        have = wav_load_file(wav_file, &audio.clip) == 0;
+#if GIFSAVER_EMBED_WAV
+    else
+        have = wav_load_builtin(&audio.clip) == 0;
+#endif
+    if (!have)
+        return;
+
+    bits = clip->frame_bytes / clip->channels * 8;
+    memset(&wfx, 0, sizeof wfx);
+    wfx.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+    wfx.Format.nChannels = (WORD) clip->channels;
+    wfx.Format.nSamplesPerSec = clip->rate;
+    wfx.Format.nAvgBytesPerSec = clip->rate * clip->frame_bytes;
+    wfx.Format.nBlockAlign = (WORD) clip->frame_bytes;
+    wfx.Format.wBitsPerSample = (WORD) bits;
+    wfx.Format.cbSize = sizeof wfx - sizeof wfx.Format;
+    wfx.Samples.wValidBitsPerSample = (WORD) bits;
+    wfx.dwChannelMask = clip->channels == 1 ? SPEAKER_FRONT_CENTER :
+                        clip->channels == 2 ? SPEAKER_FRONT_LEFT |
+                                              SPEAKER_FRONT_RIGHT : 0;
+    wfx.SubFormat = clip->format == WAV_FMT_F32LE ? subtype_float
+                                                  : subtype_pcm;
+
+    if (waveOutOpen(&audio.wo, WAVE_MAPPER, &wfx.Format, (DWORD_PTR) hwnd,
+                    0, CALLBACK_WINDOW) != MMSYSERR_NOERROR) {
+        audio.wo = NULL;
+        audio_stop("cannot open audio device");
+        return;
+    }
+    for (i = 0; i < 2; i++) {
+        audio.hdr[i].lpData = (LPSTR) clip->data;
+        audio.hdr[i].dwBufferLength =
+            (DWORD) (clip->nframes * clip->frame_bytes);
+        if (waveOutPrepareHeader(audio.wo, &audio.hdr[i],
+                                 sizeof audio.hdr[i]) != MMSYSERR_NOERROR ||
+            waveOutWrite(audio.wo, &audio.hdr[i],
+                         sizeof audio.hdr[i]) != MMSYSERR_NOERROR) {
+            audio_stop("cannot queue audio");
+            return;
+        }
+    }
+}
+
+#else /* !GIFSAVER_AUDIO */
+
+static void audio_setup(HWND hwnd, const char *wav_file)
+{
+    (void) hwnd;
+    if (wav_file)
+        fprintf(stderr, "%s: compiled without audio support "
+                "(see config.h), -sound ignored\n", progname);
+}
+
+#endif /* GIFSAVER_AUDIO */
+
 static LRESULT CALLBACK saver_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
@@ -110,6 +222,14 @@ static LRESULT CALLBACK saver_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         SetTimer(hwnd, FRAME_TIMER, (UINT) saver.delays[saver.cur], NULL);
         InvalidateRect(hwnd, NULL, FALSE);
         return 0;
+
+#if GIFSAVER_AUDIO
+    case MM_WOM_DONE:
+        if (audio.wo && waveOutWrite(audio.wo, (WAVEHDR *) lp,
+                                     sizeof(WAVEHDR)) != MMSYSERR_NOERROR)
+            audio_stop("audio write failed");
+        return 0;
+#endif
 
     case WM_SETCURSOR:
         SetCursor(NULL);
@@ -150,7 +270,7 @@ static LRESULT CALLBACK saver_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     return DefWindowProcA(hwnd, msg, wp, lp);
 }
 
-static void run_fullscreen(void)
+static void run_fullscreen(const char *wav_file)
 {
     HINSTANCE hinst = GetModuleHandleA(NULL);
     WNDCLASSA wc;
@@ -179,6 +299,8 @@ static void run_fullscreen(void)
     if (saver.nframes > 1)
         SetTimer(hwnd, FRAME_TIMER, (UINT) saver.delays[0], NULL);
 
+    audio_setup(hwnd, wav_file);
+
     while (GetMessageA(&m, NULL, 0, 0) > 0) {
         TranslateMessage(&m);
         DispatchMessageA(&m);
@@ -189,6 +311,7 @@ int main(int argc, char **argv)
 {
     Animation anim;
     const char *gif_file = NULL;
+    const char *wav_file = NULL;
     const char *env;
     char mode = 'c';    /* no arguments means "settings" */
     int i, r;
@@ -199,7 +322,9 @@ int main(int argc, char **argv)
 
     for (i = 1; i < argc; i++) {
         const char *a = argv[i];
-        if ((a[0] == '/' || a[0] == '-') && a[1] &&
+        if (!strcmp(a, "-sound") && i + 1 < argc) {
+            wav_file = argv[++i];
+        } else if ((a[0] == '/' || a[0] == '-') && a[1] &&
             (a[2] == '\0' || a[2] == ':')) {
             mode = (char) tolower((unsigned char) a[1]);
             if (mode == 'p' && a[2] == '\0' && i + 1 < argc)
@@ -215,7 +340,8 @@ int main(int argc, char **argv)
         MessageBoxA(NULL,
                     "gifsaver has no settings dialog yet.\n\n"
                     "Set the GIFSAVER_GIF environment variable to the "
-                    "path of an animated GIF to display.",
+                    "path of an animated GIF to display, and optionally "
+                    "GIFSAVER_SOUND to a WAV file to loop.",
                     progname, MB_OK | MB_ICONINFORMATION);
         return 0;
     }
@@ -224,6 +350,11 @@ int main(int argc, char **argv)
         env = getenv("GIFSAVER_GIF");
         if (env && *env)
             gif_file = env;
+    }
+    if (!wav_file) {
+        env = getenv("GIFSAVER_SOUND");
+        if (env && *env)
+            wav_file = env;
     }
 
     /* Draw at native resolution instead of being bitmap-stretched. */
@@ -247,6 +378,6 @@ int main(int argc, char **argv)
     upload_frames(&anim);
     anim_free(&anim);           /* pixel data lives in GDI bitmaps now */
 
-    run_fullscreen();
+    run_fullscreen(wav_file);
     return 0;
 }
