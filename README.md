@@ -81,6 +81,27 @@ The WAV loops through the default output device (waveOut). See
 screensaver. The small preview in Screen Saver Settings is not
 supported on Windows yet.
 
+### Debugging in VS Code
+
+[.vscode](./.vscode) has build tasks and launch configurations for both
+platforms (needs the C/C++ extension). *Ctrl+Shift+B* runs the default
+**build (debug)** task: `make -B CFLAGS="-g -O0 ..."` on Linux, or
+`build-win32.cmd` with `DEBUG=1` (unoptimized, `/MTd`, `gifsaver.pdb`)
+on Windows. Press *F5* and pick a configuration:
+
+| Configuration | Runs |
+| --- | --- |
+| Windows: test window | `gifsaver.scr -window file.gif` |
+| Windows: full screen | `gifsaver.scr /s file.gif` |
+| Windows: settings dialog | `gifsaver.scr /c` |
+| Linux: test window | `gifsaver -window file.gif` |
+
+You are prompted for the GIF (default `image.gif`). Prefer the test
+window: like X11's `-window`, `-window` on Windows opens an ordinary
+resizable window that ignores input and focus changes, whereas the full
+screen saver covers the editor and quits as soon as a breakpoint takes
+focus away.
+
 ### Dev container / Codespaces
 
 A [dev container configuration](./.devcontainer/devcontainer.json) is
@@ -236,7 +257,9 @@ automatically and draws on that window.
      ```
 
 2. In the Screen Saver Settings dialog, click *Settings…* to choose
-   the GIF and (optionally) the WAV, and set the wait time. The small
+   the GIF and (optionally) the WAV, and set the wait time. Uncheck
+   *Play sound* to keep it silent even when a WAV is configured (only an
+   explicit `-sound` argument still plays). The small
    preview stays blank; *Preview* runs it full screen.
 
 To uninstall, pick another screensaver (or *None*) in the same dialog,

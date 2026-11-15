@@ -9,6 +9,7 @@
  * standard screensaver command line:
  *
  *   gifsaver.scr /s [-sound file.wav] [file.gif]   run full screen
+ *   gifsaver.scr -window [-sound file.wav] [file.gif]   test window
  *   gifsaver.scr /p <hwnd>        preview (not supported yet)
  *   gifsaver.scr [/c[:<hwnd>]]    settings dialog
  *
@@ -52,6 +53,7 @@ const char *progname = "gifsaver";
 #define REG_KEY     "Software\\gifsaver"
 #define REG_GIF     "GifFile"
 #define REG_SOUND   "SoundFile"
+#define REG_SOUND_ON "SoundEnabled"
 
 #if GIFSAVER_EMBED_GIF && GIFSAVER_EMBED_WAV
 #define CONFIG_NOTE "Leave a field empty to use the built-in GIF or sound."
@@ -68,6 +70,7 @@ static struct {
     int *delays;        /* per-frame delay in ms */
     int nframes, cur;
     POINT mouse;        /* cursor position at startup */
+    int windowed;       /* -window: ordinary test window, input ignored */
 } saver;
 
 static void die(const char *msg)
@@ -89,6 +92,17 @@ static int reg_get(const char *name, char *buf, DWORD size)
                      NULL, buf, &size) != ERROR_SUCCESS)
         return 0;
     return buf[0] != '\0';
+}
+
+/* Read a REG_DWORD flag, falling back to def when unset. */
+static int reg_get_flag(const char *name, int def)
+{
+    DWORD value, size = sizeof value;
+
+    if (RegGetValueA(HKEY_CURRENT_USER, REG_KEY, name, RRF_RT_REG_DWORD,
+                     NULL, &value, &size) != ERROR_SUCCESS)
+        return def;
+    return value != 0;
 }
 
 static void reg_set(HKEY key, const char *name, const char *value)
@@ -117,9 +131,20 @@ static void config_browse(HWND dlg, int edit_id, const char *filter)
         SetDlgItemTextA(dlg, edit_id, path);
 }
 
+/* The sound path only matters while "Play sound" is checked. */
+static void config_sound_controls(HWND dlg)
+{
+    BOOL on = GIFSAVER_AUDIO &&
+              IsDlgButtonChecked(dlg, IDC_SOUND_ON) == BST_CHECKED;
+
+    EnableWindow(GetDlgItem(dlg, IDC_SOUND), on);
+    EnableWindow(GetDlgItem(dlg, IDC_SOUND_BROWSE), on);
+}
+
 static int config_save(HWND dlg)
 {
     char path[MAX_PATH];
+    DWORD sound_on;
     HKEY key;
 
 #if !GIFSAVER_EMBED_GIF
@@ -139,8 +164,31 @@ static int config_save(HWND dlg)
     reg_set(key, REG_GIF, path);
     GetDlgItemTextA(dlg, IDC_SOUND, path, sizeof path);
     reg_set(key, REG_SOUND, path);
+    sound_on = IsDlgButtonChecked(dlg, IDC_SOUND_ON) == BST_CHECKED;
+    RegSetValueExA(key, REG_SOUND_ON, 0, REG_DWORD, (const BYTE *) &sound_on,
+                   sizeof sound_on);
     RegCloseKey(key);
     return 0;
+}
+
+static INT_PTR CALLBACK about_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
+{
+    (void) lp;
+    switch (msg) {
+    case WM_INITDIALOG:
+        SendDlgItemMessageA(dlg, IDC_ABOUT_ICON, STM_SETICON,
+                            (WPARAM) LoadIcon(NULL, IDI_INFORMATION), 0);
+        SetDlgItemTextA(dlg, IDC_ABOUT_VERSION, "gifsaver " GIFSAVER_VERSION);
+        return TRUE;
+
+    case WM_COMMAND:
+        if (LOWORD(wp) == IDOK || LOWORD(wp) == IDCANCEL) {
+            EndDialog(dlg, LOWORD(wp));
+            return TRUE;
+        }
+        break;
+    }
+    return FALSE;
 }
 
 static INT_PTR CALLBACK config_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
@@ -156,15 +204,24 @@ static INT_PTR CALLBACK config_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
             SetDlgItemTextA(dlg, IDC_GIF, path);
         if (reg_get(REG_SOUND, path, sizeof path))
             SetDlgItemTextA(dlg, IDC_SOUND, path);
+        CheckDlgButton(dlg, IDC_SOUND_ON, reg_get_flag(REG_SOUND_ON, 1)
+                                          ? BST_CHECKED : BST_UNCHECKED);
 #if !GIFSAVER_AUDIO
-        EnableWindow(GetDlgItem(dlg, IDC_SOUND), FALSE);
-        EnableWindow(GetDlgItem(dlg, IDC_SOUND_BROWSE), FALSE);
+        EnableWindow(GetDlgItem(dlg, IDC_SOUND_ON), FALSE);
 #endif
+        config_sound_controls(dlg);
         SetDlgItemTextA(dlg, IDC_NOTE, CONFIG_NOTE);
         return TRUE;
 
     case WM_COMMAND:
         switch (LOWORD(wp)) {
+        case IDC_ABOUT:
+            DialogBoxParamA(GetModuleHandleA(NULL),
+                            MAKEINTRESOURCEA(IDD_ABOUT), dlg, about_proc, 0);
+            return TRUE;
+        case IDC_SOUND_ON:
+            config_sound_controls(dlg);
+            return TRUE;
         case IDC_GIF_BROWSE:
             config_browse(dlg, IDC_GIF,
                           "GIF images (*.gif)\0*.gif\0All files (*.*)\0*.*\0");
@@ -358,11 +415,15 @@ static LRESULT CALLBACK saver_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 #endif
 
     case WM_SETCURSOR:
+        if (saver.windowed)
+            break;
         SetCursor(NULL);
         return TRUE;
 
     case WM_MOUSEMOVE: {
         POINT pt;
+        if (saver.windowed)
+            break;
         GetCursorPos(&pt);
         if (abs(pt.x - saver.mouse.x) > MOUSE_SLOP ||
             abs(pt.y - saver.mouse.y) > MOUSE_SLOP)
@@ -376,11 +437,13 @@ static LRESULT CALLBACK saver_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_MBUTTONDOWN:
     case WM_XBUTTONDOWN:
     case WM_MOUSEWHEEL:
+        if (saver.windowed)
+            break;
         PostMessage(hwnd, WM_CLOSE, 0, 0);
         return 0;
 
     case WM_ACTIVATEAPP:
-        if (!wp)
+        if (!wp && !saver.windowed)
             PostMessage(hwnd, WM_CLOSE, 0, 0);
         break;
 
@@ -396,7 +459,7 @@ static LRESULT CALLBACK saver_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     return DefWindowProcA(hwnd, msg, wp, lp);
 }
 
-static void run_fullscreen(const char *wav_file)
+static void run_saver(const char *wav_file, int sound_on)
 {
     HINSTANCE hinst = GetModuleHandleA(NULL);
     WNDCLASSA wc;
@@ -406,18 +469,25 @@ static void run_fullscreen(const char *wav_file)
     memset(&wc, 0, sizeof wc);
     wc.lpfnWndProc = saver_proc;
     wc.hInstance = hinst;
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.lpszClassName = "gifsaver";
     if (!RegisterClassA(&wc))
         die("RegisterClass failed");
 
     GetCursorPos(&saver.mouse);
-    hwnd = CreateWindowExA(WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-                           "gifsaver", "gifsaver", WS_POPUP | WS_VISIBLE,
-                           GetSystemMetrics(SM_XVIRTUALSCREEN),
-                           GetSystemMetrics(SM_YVIRTUALSCREEN),
-                           GetSystemMetrics(SM_CXVIRTUALSCREEN),
-                           GetSystemMetrics(SM_CYVIRTUALSCREEN),
-                           NULL, NULL, hinst, NULL);
+    if (saver.windowed)
+        hwnd = CreateWindowExA(0, "gifsaver", "gifsaver",
+                               WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                               CW_USEDEFAULT, CW_USEDEFAULT, 800, 600,
+                               NULL, NULL, hinst, NULL);
+    else
+        hwnd = CreateWindowExA(WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+                               "gifsaver", "gifsaver", WS_POPUP | WS_VISIBLE,
+                               GetSystemMetrics(SM_XVIRTUALSCREEN),
+                               GetSystemMetrics(SM_YVIRTUALSCREEN),
+                               GetSystemMetrics(SM_CXVIRTUALSCREEN),
+                               GetSystemMetrics(SM_CYVIRTUALSCREEN),
+                               NULL, NULL, hinst, NULL);
     if (!hwnd)
         die("cannot create screensaver window");
     SetForegroundWindow(hwnd);
@@ -425,7 +495,8 @@ static void run_fullscreen(const char *wav_file)
     if (saver.nframes > 1)
         SetTimer(hwnd, FRAME_TIMER, (UINT) saver.delays[0], NULL);
 
-    audio_setup(hwnd, wav_file);
+    if (sound_on)
+        audio_setup(hwnd, wav_file);
 
     while (GetMessageA(&m, NULL, 0, 0) > 0) {
         TranslateMessage(&m);
@@ -442,6 +513,7 @@ int main(int argc, char **argv)
     const char *env;
     HWND parent = NULL;
     char mode = 'c';    /* no arguments means "settings" */
+    int sound_on;
     int i, r;
 
     /* Let diagnostics reach the console when started from one. */
@@ -455,6 +527,9 @@ int main(int argc, char **argv)
         const char *a = argv[i];
         if (!strcmp(a, "-sound") && i + 1 < argc) {
             wav_file = argv[++i];
+        } else if (!strcmp(a, "-window")) {
+            saver.windowed = 1;
+            mode = 's';
         } else if ((a[0] == '/' || a[0] == '-') && a[1] &&
             (a[2] == '\0' || a[2] == ':')) {
             mode = (char) tolower((unsigned char) a[1]);
@@ -482,7 +557,9 @@ int main(int argc, char **argv)
         else if (reg_get(REG_GIF, reg_gif, sizeof reg_gif))
             gif_file = reg_gif;
     }
-    if (!wav_file) {
+    /* An explicit -sound still plays when sound is off in the settings. */
+    sound_on = wav_file || reg_get_flag(REG_SOUND_ON, 1);
+    if (!wav_file && sound_on) {
         env = getenv("GIFSAVER_SOUND");
         if (env && *env)
             wav_file = env;
@@ -508,6 +585,6 @@ int main(int argc, char **argv)
     upload_frames(&anim);
     anim_free(&anim);           /* pixel data lives in GDI bitmaps now */
 
-    run_fullscreen(wav_file);
+    run_saver(wav_file, sound_on);
     return 0;
 }

@@ -1,0 +1,53 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Windows: test window",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/gifsaver.scr",
+            "args": ["-window", "${input:gifFile}"],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "build (debug)"
+        },
+        {
+            "name": "Windows: full screen",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/gifsaver.scr",
+            "args": ["/s", "${input:gifFile}"],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "build (debug)"
+        },
+        {
+            "name": "Windows: settings dialog",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/gifsaver.scr",
+            "args": ["/c"],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "build (debug)"
+        },
+        {
+            "name": "Linux: test window",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/gifsaver",
+            "args": ["-window", "${input:gifFile}"],
+            "cwd": "${workspaceFolder}",
+            "MIMode": "gdb",
+            "setupCommands": [
+                { "text": "-enable-pretty-printing", "ignoreFailures": true }
+            ],
+            "preLaunchTask": "build (debug)"
+        }
+    ],
+    "inputs": [
+        {
+            "id": "gifFile",
+            "type": "promptString",
+            "description": "GIF to display",
+            "default": "image.gif"
+        }
+    ]
+}
