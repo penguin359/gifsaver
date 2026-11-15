@@ -171,6 +171,26 @@ static int config_save(HWND dlg)
     return 0;
 }
 
+static INT_PTR CALLBACK about_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
+{
+    (void) lp;
+    switch (msg) {
+    case WM_INITDIALOG:
+        SendDlgItemMessageA(dlg, IDC_ABOUT_ICON, STM_SETICON,
+                            (WPARAM) LoadIcon(NULL, IDI_INFORMATION), 0);
+        SetDlgItemTextA(dlg, IDC_ABOUT_VERSION, "gifsaver " GIFSAVER_VERSION);
+        return TRUE;
+
+    case WM_COMMAND:
+        if (LOWORD(wp) == IDOK || LOWORD(wp) == IDCANCEL) {
+            EndDialog(dlg, LOWORD(wp));
+            return TRUE;
+        }
+        break;
+    }
+    return FALSE;
+}
+
 static INT_PTR CALLBACK config_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 {
     char path[MAX_PATH];
@@ -195,6 +215,10 @@ static INT_PTR CALLBACK config_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_COMMAND:
         switch (LOWORD(wp)) {
+        case IDC_ABOUT:
+            DialogBoxParamA(GetModuleHandleA(NULL),
+                            MAKEINTRESOURCEA(IDD_ABOUT), dlg, about_proc, 0);
+            return TRUE;
         case IDC_SOUND_ON:
             config_sound_controls(dlg);
             return TRUE;
